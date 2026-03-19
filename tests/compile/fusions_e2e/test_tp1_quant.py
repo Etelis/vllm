@@ -16,6 +16,7 @@ from .common import (
     is_blackwell,
 )
 from .models import (
+    FLASH_ATTN,
     FLASHINFER_ATTN,
     FLASHINFER_MLA_ATTN,
     ROCM_AITER_UNIFIED_ATTN,
@@ -53,6 +54,7 @@ from .models import (
     "attn_backend",
     [
         TRITON_ATTN,
+        FLASH_ATTN,
         FLASHINFER_ATTN,
         ROCM_ATTN,
         ROCM_AITER_UNIFIED_ATTN,

@@ -58,6 +58,18 @@ TRITON_MLA_ATTN = pytest.param(
     id="TRITON_MLA",
 )
 
+FLASH_ATTN = pytest.param(
+    AttentionBackendCase(
+        backend=AttentionBackendEnum.FLASH_ATTN,
+        model_kwargs=dict(kv_cache_dtype="fp8"),
+    ),
+    id="FLASH_ATTN",
+    marks=pytest.mark.skipif(
+        not current_platform.has_device_capability(90),
+        reason="FA3 FP8 output fusion requires Hopper (SM90+)",
+    ),
+)
+
 # Models
 llama3_8b = ModelFusionInfo(
     model_name="meta-llama/Llama-3.1-8B-Instruct",

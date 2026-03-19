@@ -963,23 +963,28 @@ class FlashAttentionImpl(AttentionImpl):
         )
         assert context_attn_out_cor.shape == query_attn_out.shape
         assert context_lse_cor.shape == query_lse.shape
+
+        # Merge in BF16 precision. When fused FP8 output quant is active,
+        # the output buffer may be FP8, so allocate a BF16 buffer for merge.
+        if output_scale is not None:
+            merge_output = torch.empty_like(output, dtype=query_attn_out.dtype)
+        else:
+            merge_output = output
         merge_attn_states(
-            output,
+            merge_output,
             context_attn_out_cor,
             context_lse_cor,
             query_attn_out,
             query_lse,
         )
 
-        # Apply FP8 output quantization after merging if requested.
-        # DCP attention merges outputs from multiple attention computations,
-        # which requires high-precision arithmetic.
-        # Fused quantization is not supported at the kernel level,
-        # so quantization happens after the merge step.
         if output_scale is not None:
             from vllm import _custom_ops as ops
 
-            output[:] = ops.scaled_fp8_quant(output, output_scale)[0]
+            flat = merge_output.reshape(
+                -1, merge_output.shape[-2] * merge_output.shape[-1]
+            )
+            output.reshape(flat.shape)[:] = ops.scaled_fp8_quant(flat, output_scale)[0]
 
     def _forward_encoder_attention(
         self,
@@ -1221,15 +1226,19 @@ def cascade_attention(
         num_splits=1 if vllm_is_batch_invariant() else max_num_splits,
     )
 
-    # Merge prefix and suffix outputs, and store the result in output.
-    merge_attn_states(output, prefix_output, prefix_lse, suffix_output, suffix_lse)
+    # Merge prefix and suffix outputs in BF16 precision.
+    # When fused FP8 output quant is active, the output buffer may be FP8,
+    # so we unconditionally allocate a BF16 buffer for the merge.
+    if output_scale is not None:
+        merge_output = torch.empty_like(output, dtype=prefix_output.dtype)
+    else:
+        merge_output = output
+    merge_attn_states(
+        merge_output, prefix_output, prefix_lse, suffix_output, suffix_lse
+    )
 
-    # Apply FP8 output quantization after merging if requested.
-    # Cascade attention merges prefix and suffix outputs,
-    # which requires high-precision arithmetic.
-    # Fused quantization is not supported at the kernel level,
-    # so quantization happens after the merge step.
     if output_scale is not None:
         from vllm import _custom_ops as ops
 
-        output[:] = ops.scaled_fp8_quant(output, output_scale)[0]
+        flat = merge_output.reshape(-1, merge_output.shape[-2] * merge_output.shape[-1])
+        output.reshape(flat.shape)[:] = ops.scaled_fp8_quant(flat, output_scale)[0]
