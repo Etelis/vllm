@@ -336,11 +336,28 @@ class CpuGpuOffloadingHandlers:
 
         gpu_tensors: list[torch.Tensor] = []
         cpu_tensors: list[torch.Tensor] = []
-        for kv_cache_tensor in kv_caches.tensors:
+        for i, kv_cache_tensor in enumerate(kv_caches.tensors):
             gpu_page_size_bytes = kv_cache_tensor.page_size_bytes
-            gpu_tensor = kv_cache_tensor.tensor.view(torch.int8).view(
-                (-1, gpu_page_size_bytes)
-            )
+            # Reject entries that would produce NULL pointers or zero-size
+            # copies in cuMemcpyBatchAsync. A zero-dim tensor yields
+            # data_ptr()==0, which the batched driver API reports as
+            # CUDA_ERROR_INVALID_VALUE at the affected index (see #39491),
+            # while the legacy per-tensor path either segfaults or silently
+            # no-ops. Fail loudly at init with an actionable message instead
+            # of waiting for the first offload transfer.
+            underlying = kv_cache_tensor.tensor
+            if gpu_page_size_bytes == 0 or underlying.numel() == 0:
+                raise ValueError(
+                    f"CpuGpuOffloadingHandlers: kv_caches.tensors[{i}] is "
+                    f"empty (shape={tuple(underlying.shape)}, "
+                    f"page_size_bytes={gpu_page_size_bytes}). CPU offloading "
+                    f"cannot operate on zero-sized cache tensors. This "
+                    f"usually means a model layer (e.g. an MLA V-slot or "
+                    f"an MTP draft layer) is registering a placeholder "
+                    f"KV cache entry that should be filtered out of the "
+                    f"offloading cache spec."
+                )
+            gpu_tensor = underlying.view(torch.int8).view((-1, gpu_page_size_bytes))
             cpu_page_size_bytes = gpu_page_size_bytes * block_size_factor
 
             if mmap_region is not None:

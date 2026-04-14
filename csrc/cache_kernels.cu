@@ -95,6 +95,20 @@ void swap_blocks_batch(const torch::Tensor& src_ptrs,
   int64_t* dst_data = dst_ptrs.mutable_data_ptr<int64_t>();
   int64_t* size_data = sizes.mutable_data_ptr<int64_t>();
 
+  // Reject NULL pointers / zero-size entries up front. Otherwise the CUDA
+  // driver surfaces them as CUDA_ERROR_INVALID_VALUE at the offending
+  // batch index (see vllm-project/vllm#39491), or the pre-12.8 fallback
+  // segfaults. Failing here names the exact index so the caller can trace
+  // it back to a misregistered kv_caches.tensors entry.
+  for (int64_t i = 0; i < n; ++i) {
+    TORCH_CHECK(src_data[i] != 0,
+                "swap_blocks_batch: src pointer is NULL at batch index ", i);
+    TORCH_CHECK(dst_data[i] != 0,
+                "swap_blocks_batch: dst pointer is NULL at batch index ", i);
+    TORCH_CHECK(size_data[i] != 0,
+                "swap_blocks_batch: size is zero at batch index ", i);
+  }
+
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   // Use cuMemcpyBatchAsync (CUDA 12.8+) to submit all copies in a single
