@@ -226,6 +226,24 @@ class SingleDirectionOffloadingHandler(OffloadingHandler):
             last_event = last_transfer.end_event
             # assure job will start only after the previous one completes
             stream.wait_event(last_event)
+        # DEBUG #39491: detect NULL pointers / zero sizes before the driver
+        # surfaces CUDA_ERROR_INVALID_VALUE, and report which tensor index is
+        # the culprit so we can trace back to the empty kv_cache_tensor.
+        if total > 0:
+            bad_src = np.flatnonzero(all_src == 0)
+            bad_dst = np.flatnonzero(all_dst == 0)
+            bad_sz = np.flatnonzero(all_sizes == 0)
+            if bad_src.size or bad_dst.size or bad_sz.size:
+                raise RuntimeError(
+                    "DEBUG-39491: swap_blocks_batch would submit invalid "
+                    f"entries. null_src_idx={bad_src.tolist()} "
+                    f"null_dst_idx={bad_dst.tolist()} "
+                    f"zero_size_idx={bad_sz.tolist()} "
+                    f"num_pairs={num_pairs} num_tensors={num_tensors} "
+                    f"tensor_block_sizes={self.tensor_block_size_in_bytes} "
+                    f"src_base_ptrs={[hex(int(p)) for p in self._src_base_ptrs]} "
+                    f"dst_base_ptrs={[hex(int(p)) for p in self._dst_base_ptrs]}"
+                )
         with torch.cuda.stream(stream):
             start_event.record(stream)
             if total > 0:
@@ -292,13 +310,39 @@ class CpuGpuOffloadingHandlers:
     ):
         pin_memory = is_pin_memory_available()
         logger.info("Allocating %d CPU tensors...", len(kv_caches.tensors))
+        # DEBUG #39491: log each registered KV cache tensor so we can spot
+        # zero-sized entries that later produce NULL pointers or zero-size
+        # batch copies in cuMemcpyBatchAsync.
+        for i, kct in enumerate(kv_caches.tensors):
+            t = kct.tensor
+            logger.warning(
+                "DEBUG-39491 kv_cache_tensor[%d]: shape=%s dtype=%s device=%s "
+                "page_size_bytes=%s numel=%d data_ptr=%#x",
+                i,
+                tuple(t.shape),
+                t.dtype,
+                t.device,
+                kct.page_size_bytes,
+                t.numel(),
+                t.data_ptr(),
+            )
         gpu_tensors: list[torch.Tensor] = []
         cpu_tensors: list[torch.Tensor] = []
-        for kv_cache_tensor in kv_caches.tensors:
+        for i, kv_cache_tensor in enumerate(kv_caches.tensors):
             gpu_page_size_bytes = kv_cache_tensor.page_size_bytes
             gpu_tensor = kv_cache_tensor.tensor.view(torch.int8).view(
                 (-1, gpu_page_size_bytes)
             )
+            # DEBUG #39491: fail loudly if this would seed the handler with a
+            # zero-dimension tensor (the suspected root cause of the crash).
+            if gpu_tensor.shape[0] == 0 or gpu_tensor.shape[1] == 0:
+                raise RuntimeError(
+                    f"DEBUG-39491: kv_cache_tensor[{i}] has zero-dim shape "
+                    f"{tuple(gpu_tensor.shape)} (page_size_bytes="
+                    f"{gpu_page_size_bytes}, underlying numel="
+                    f"{kv_cache_tensor.tensor.numel()}). Offloading cannot "
+                    f"operate on empty tensors."
+                )
             cpu_page_size_bytes = gpu_page_size_bytes * block_size_factor
             cpu_tensor = torch.zeros(
                 (num_cpu_blocks, cpu_page_size_bytes),
