@@ -7,7 +7,3 @@ parallelism-invariant. That invariant is not known to hold under V2, so sharing
 a cache dir across layouts could alias distinct blocks. Gated on the canonical
 `vllm_config.use_v2_model_runner` (not a raw env read), alongside the existing
 MLA/multi-group exclusions.
-
----
-
-Not a duplicate: follow-up to merged #44733; no open PR covers the V2 case.
