@@ -146,6 +146,24 @@ vs stock EPLB the gain is +35%. Even the warmup pass that absorbed the
 rearrangement stall beat the untriggered arm end-to-end (8313 vs 7490).
 Branch-vs-release sanity: arm off 7490 ~ iteration-1 EPLB-off 7574.
 
-Single run per arm so far; repeat cycles for error bars in progress. p90 is
-the one metric that crossed (7.89 vs 7.52) while p50/p99 improved - under
-investigation.
+Repeated with fresh pod restarts (independent placements, caches, nodes):
+
+| arm | rep1 | rep2 | mean | p50 (reps) | p99 (reps) |
+| --- | --- | --- | --- | --- | --- |
+| off | 7490 | 7608 | 7549 (+-0.8%) | 5.84 / 5.45 | 9.89 / 10.01 |
+| ours | 8720 | 8659 | **8689 (+-0.4%), +15.1%** | 4.72 / 4.73 | 9.08 / 9.06 |
+
+The gain is ~19x the off-arm run-to-run spread. The p90 wobble seen in rep1
+(7.89 vs 7.52) is inside the off arm's own rep-to-rep p90 range (7.52-8.86):
+tail noise, not a regression. The triggered arm is also more reproducible
+than the untriggered one (fitted placement removes a variance source).
+
+### Iteration 3 - balancedness-threshold auto-trigger (engine-only ablation)
+
+`EPLBConfig.rebalance_threshold` monitors windowed balancedness (delta of the
+all-reduced per-rank load between samples, so it stays fresh even when the
+sliding window is not recording) and schedules the same synchronized forced
+rearrangement without any router involvement - implementing the balancedness
+trigger left as a to-do in the original vLLM EPLB PR. Ablation vs the
+router-trigger arm quantifies how much of the win needs router knowledge at
+steady state vs a purely engine-side policy (results pending).
