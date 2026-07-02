@@ -166,4 +166,16 @@ sliding window is not recording) and schedules the same synchronized forced
 rearrangement without any router involvement - implementing the balancedness
 trigger left as a to-do in the original vLLM EPLB PR. Ablation vs the
 router-trigger arm quantifies how much of the win needs router knowledge at
-steady state vs a purely engine-side policy (results pending).
+steady state vs a purely engine-side policy.
+
+Result (same protocol, threshold 0.7, sample every 32 steps, cooldown 2000;
+no manual trigger sent): warmup 8252, **measured 8620 tok/s, p50 4.74** -
+within noise of the router-triggered arm (8689 +-0.4%), +14.2% over off.
+All 4 EP ranks on both replicas logged the same breach (balancedness 0.6975
+< 0.70) and the same aligned fire step (750080): the in-band trigger is
+deterministically synchronized. Steady-state conclusion: the engine-only
+threshold captures the full win; router involvement is not needed to *fit*
+a stable mix. The router channel's remaining value is proactivity under
+traffic drift (re-pin/scale events, where reactive detection must first
+suffer the imbalance and cooldown gates back-to-back refits) and
+cross-replica grouping decisions - measured next.
