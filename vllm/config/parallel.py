@@ -79,6 +79,19 @@ class EPLBConfig:
     """
     Interval for logging the balancedness.
     """
+    rebalance_threshold: float = Field(default=0.0, ge=0.0, lt=1.0)
+    """
+    If > 0, monitor balancedness (mean/max per-rank load, sampled every
+    `log_balancedness_interval` steps) and schedule an expert rearrangement
+    as soon as it falls below this threshold, without waiting for the
+    periodic `step_interval`. Incurs the same communication overhead as
+    `log_balancedness`.
+    """
+    rebalance_cooldown_steps: int = Field(default=2000, gt=0)
+    """
+    Minimum steps after a rearrangement before the balancedness threshold
+    may trigger another one.
+    """
     use_async: bool = True
     """
     Whether to use non-blocking EPLB.

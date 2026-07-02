@@ -263,6 +263,11 @@ class EplbState:
         aligned step boundary so all EP ranks fire at the same step even if
         they observe the scheduling RPC one step apart.
         """
+        self._monitor_last_load: dict[str, torch.Tensor] = {}
+        """
+        Per-model baseline of the synced per-rank load at the previous
+        balancedness sample, for windowed threshold monitoring.
+        """
         self.should_record_tensor: torch.Tensor | None = None
         """
         Shared scalar bool tensor for all layers.  Every
@@ -565,8 +570,10 @@ class EplbState:
             for eplb_model_state in self.model_states.values():
                 eplb_model_state.expert_load_pass.zero_()
 
+        rebalance_threshold = self.parallel_config.eplb_config.rebalance_threshold
+        monitor_balancedness = log_stats or (rebalance_threshold > 0 and not is_dummy)
         if (
-            log_stats
+            monitor_balancedness
             and self.expert_rearrangement_step
             % self.parallel_config.eplb_config.log_balancedness_interval
             == 0
@@ -600,7 +607,7 @@ class EplbState:
                 avg_tokens, max_tokens = tokens_tensors
                 balancedness = avg_tokens / max_tokens if max_tokens > 0 else 0.0
 
-                if ep_group.rank() == 0:
+                if log_stats and ep_group.rank() == 0:
                     logger.info(
                         "EPLB step: %d for model %s: avg_tokens=%.2f, "
                         "max_tokens=%d, balancedness=%.4f, "
@@ -613,6 +620,50 @@ class EplbState:
                         self.expert_rearrangement_step_interval
                         - self.expert_rearrangement_step,
                     )
+
+                if rebalance_threshold <= 0:
+                    continue
+
+                # Threshold-triggered rebalancing. The load pass is only
+                # zeroed while the sliding window records, so between samples
+                # it accumulates; track a per-model baseline and evaluate the
+                # balancedness of the delta since the previous sample. Both
+                # inputs come from the all-reduced load pass, so every EP
+                # rank observes the same value at the same step and schedules
+                # the same target step. The step counter resets on
+                # rearrangement, so requiring it to exceed the cooldown
+                # bounds the trigger rate.
+                last = self._monitor_last_load.get(eplb_model_state.model_name)
+                delta = num_tokens_per_rank
+                if last is not None and last.shape == delta.shape:
+                    diff = delta - last
+                    # The recorder zeroes the pass; a negative delta means
+                    # the baseline is stale, so fall back to the fresh pass.
+                    delta = delta if bool((diff < 0).any()) else diff
+                self._monitor_last_load[eplb_model_state.model_name] = (
+                    num_tokens_per_rank.clone()
+                )
+                delta_avg = float(delta.mean(dim=0).sum(dim=0))
+                delta_max = float(delta.max(dim=0).values.sum(dim=0))
+                delta_balancedness = delta_avg / delta_max if delta_max > 0 else 1.0
+
+                if (
+                    delta_max > 0
+                    and delta_balancedness < rebalance_threshold
+                    and self.forced_rearrangement_step is None
+                    and self.expert_rearrangement_step
+                    >= self.parallel_config.eplb_config.rebalance_cooldown_steps
+                ):
+                    target = self.schedule_forced_rearrangement()
+                    if ep_group.rank() == 0:
+                        logger.info(
+                            "EPLB: balancedness %.4f below threshold %.2f for "
+                            "model %s; rearrangement scheduled at step %d",
+                            delta_balancedness,
+                            rebalance_threshold,
+                            eplb_model_state.model_name,
+                            target,
+                        )
 
         # Update the expert load sliding window
         if not is_dummy:
