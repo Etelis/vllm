@@ -230,3 +230,31 @@ What survives the audit:
 Methodology rule going forward: **same-pod A/Bs only** (flip route-maps or
 config on live pods); restart-per-arm comparisons are not trustworthy on a
 shared cluster.
+
+### Same-pod stall-cost test (closes the audit)
+
+Control vs two mid-pass forced rearrangements, same warm pods, back-to-back:
+8930 vs 8910 tok/s -> **~0.1% per rearrangement** (p99 +3.9 s from requests
+in flight during the weight copy). Async rearrangement is essentially free.
+Consequence: iteration-1's "stock EPLB -15%" is also retracted (two
+rearrangements cost 0.2%; a periodic cadence cannot cost 15%) - same
+node-placement confound, different direction.
+
+### Audited bottom line
+
+At Qwen3-30B-A3B / EP4 / NVLink / ~130 concurrent: expert placement fit is
+worth ~1%, async rearrangement costs ~0.1%, and EPLB (any policy) is
+net-neutral. Every 10%+ arm-vs-arm effect measured across pod restarts on
+this shared cluster was placement/time confounding - it passed n=2
+replication with tight error bars in both directions, which is the
+methodological headline: **restart-per-arm benchmarks on shared clusters
+produce convincing false effects; only same-pod A/Bs are trustworthy.**
+
+Survives: Figure 1 (routing manufactures expert heterogeneity - the llm-d
+phenomenon); the vLLM machinery (threshold auto-trigger, synchronized forced
+rearrange, EPLB stats RPC) as cheap operational-control/observability
+features; two real bug finds (rank-divergent gating around a collective;
+cumulative-load staleness in naive threshold monitoring). The EPLB
+benefit-regime question moves to wide-EP / network-bound / many-expert
+scale, and the routing-layer value (grouping, redundancy<->KV memory) to
+future work with same-pod protocols.
