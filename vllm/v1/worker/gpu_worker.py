@@ -1118,6 +1118,25 @@ class Worker(WorkerBase):
         # worker will always be healthy as long as it's running.
         return
 
+    def trigger_eplb_rearrange(self) -> int | None:
+        """Schedule a one-shot EPLB rearrangement at a synchronized step.
+
+        Intended for external coordinators (e.g. a routing tier) that know
+        the traffic mix just shifted. Returns the scheduled step, or None if
+        EPLB is disabled.
+        """
+        eplb_state = getattr(self.model_runner, "eplb_state", None)
+        if eplb_state is None:
+            return None
+        return eplb_state.schedule_forced_rearrangement()
+
+    def get_eplb_stats(self) -> dict | None:
+        """Return a compact EPLB state summary, or None if EPLB is disabled."""
+        eplb_state = getattr(self.model_runner, "eplb_state", None)
+        if eplb_state is None:
+            return None
+        return eplb_state.get_stats()
+
     def save_sharded_state(
         self,
         path: str,

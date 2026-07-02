@@ -256,6 +256,13 @@ class EplbState:
         Interval for expert rearrangement steps.
         This is a constant and is taken from the config.
         """
+        self.forced_rearrangement_step: int | None = None
+        """
+        If set, trigger a rearrangement once `expert_rearrangement_step`
+        reaches this value, ahead of the periodic interval. Scheduled on an
+        aligned step boundary so all EP ranks fire at the same step even if
+        they observe the scheduling RPC one step apart.
+        """
         self.should_record_tensor: torch.Tensor | None = None
         """
         Shared scalar bool tensor for all layers.  Every
@@ -642,7 +649,14 @@ class EplbState:
                         ep_rank=ep_group.rank(),
                     )
 
-        if self.expert_rearrangement_step >= self.expert_rearrangement_step_interval:
+        forced = (
+            self.forced_rearrangement_step is not None
+            and self.expert_rearrangement_step >= self.forced_rearrangement_step
+        )
+        if (
+            forced
+            or self.expert_rearrangement_step >= self.expert_rearrangement_step_interval
+        ):
             if self.is_async and any(
                 eplb_model_state.rebalanced
                 for eplb_model_state in self.model_states.values()
@@ -653,9 +667,60 @@ class EplbState:
                 self._update_layer_should_record(log_stats=log_stats)
                 return
             self.expert_rearrangement_step = 0
+            self.forced_rearrangement_step = None
             self.rearrange()
 
         self._update_layer_should_record(log_stats=log_stats)
+
+    def schedule_forced_rearrangement(self, align: int = 64, margin: int = 32) -> int:
+        """Schedule a one-shot rearrangement at an aligned future step.
+
+        All EP ranks must fire at the same `expert_rearrangement_step` or the
+        collective communication in `rearrange` hangs. Aligning the target
+        step to an `align` boundary makes ranks that observe this call up to
+        `align - margin - 1` steps apart still agree on the fire step.
+
+        Returns the scheduled `expert_rearrangement_step` value.
+        """
+        target = (self.expert_rearrangement_step + margin) // align * align + align
+        self.forced_rearrangement_step = target
+        logger.info(
+            "EPLB: forced rearrangement scheduled at step %d (now %d)",
+            target,
+            self.expert_rearrangement_step,
+        )
+        return target
+
+    def get_stats(self) -> dict:
+        """Compact EPLB state summary for external consumers (e.g. routers).
+
+        Returns per-model logical-expert loads summed over the sliding window
+        and MoE layers, plus placement and step counters.
+        """
+        stats: dict = {
+            "expert_rearrangement_step": self.expert_rearrangement_step,
+            "expert_rearrangement_step_interval": (
+                self.expert_rearrangement_step_interval
+            ),
+            "forced_rearrangement_step": self.forced_rearrangement_step,
+            "models": {},
+        }
+        for name, model_state in self.model_states.items():
+            # (num_moe_layers, num_physical_experts); map varies per layer.
+            phy_load = model_state.expert_load_window.sum(dim=0).flatten()
+            phy2log = model_state.physical_to_logical_map
+            flat_map = phy2log.flatten().long()
+            valid = flat_map >= 0
+            num_logical = int(model_state.model.num_logical_experts)
+            log_load = torch.zeros(
+                num_logical, dtype=phy_load.dtype, device=phy_load.device
+            )
+            log_load.scatter_add_(0, flat_map[valid], phy_load[valid])
+            stats["models"][name] = {
+                "logical_expert_load_window_sum": log_load.cpu().tolist(),
+                "physical_to_logical_map": phy2log.cpu().tolist(),
+            }
+        return stats
 
     def _should_record_current_step(self, log_stats: bool = False) -> bool:
         """Return whether expert-load recording should be enabled this step.
@@ -668,6 +733,10 @@ class EplbState:
             self.expert_rearrangement_step_interval - self.expert_rearrangement_step
         )
         should_record_for_rearrange = steps_remaining <= self.expert_load_window_size
+        # Record while a forced rearrangement is pending so the load window
+        # holds fresh stats when it fires.
+        if self.forced_rearrangement_step is not None:
+            should_record_for_rearrange = True
 
         if not log_stats:
             return should_record_for_rearrange
