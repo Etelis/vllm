@@ -157,7 +157,156 @@ def build_mbpp_domain(
     )
 
 
+SQUAD_DEV_URL = "https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v1.1.json"
+
+
+def _squad_example(context: str, question: str, answer: str | None) -> str:
+    block = f"Passage: {context}\nQuestion: {question}\nAnswer:"
+    if answer is not None:
+        block += f" {answer}\n\n"
+    return block
+
+
+def build_squad_domain(
+    num_questions: int,
+    num_shots: int = 4,
+    max_tokens: int = 64,
+    cache_dir: str = "/tmp/moe_expert_routing",
+) -> Domain:
+    """SQuAD reading-comprehension domain: fixed few-shot preamble per prompt."""
+    path = _download_and_cache(SQUAD_DEV_URL, cache_dir)
+    with open(path) as fin:
+        data = json.load(fin)["data"]
+    triples: list[tuple[str, str, str]] = []
+    for article in data:
+        for para in article["paragraphs"]:
+            for qa in para["qas"]:
+                if qa["answers"]:
+                    triples.append(
+                        (para["context"], qa["question"], qa["answers"][0]["text"])
+                    )
+    preamble = (
+        "Answer each question using only the given passage. "
+        "Reply with the shortest exact answer span.\n\n"
+    )
+    for context, question, answer in triples[:num_shots]:
+        preamble += _squad_example(context, question, answer)
+    pool = triples[num_shots : num_shots + num_questions]
+    prompts = [preamble + _squad_example(c, q, None) for c, q, _ in pool]
+    return Domain(
+        name="squad",
+        prompts=prompts,
+        preamble=preamble,
+        stop=["\n"],
+        max_tokens=max_tokens,
+        num_shots=num_shots,
+        meta={"preamble_chars": len(preamble), "num_pool": len(pool)},
+    )
+
+
+WRITING_SUBJECTS = [
+    "a lighthouse keeper",
+    "a retired astronaut",
+    "a street violinist",
+    "an apprentice mapmaker",
+    "a night-shift baker",
+    "a deep-sea diver",
+    "a clockmaker's daughter",
+    "a wandering translator",
+    "a beekeeper",
+    "a tram conductor",
+    "an archivist of lost letters",
+    "a glassblower",
+    "a mountain guide",
+    "a radio operator",
+    "a museum night guard",
+    "a typewriter repairman",
+    "a mushroom forager",
+    "a bridge painter",
+    "a subway busker",
+    "a weather-station observer",
+]
+WRITING_QUIRKS = [
+    "collects other people's shopping lists",
+    "speaks to machines politely",
+    "remembers every sunset in color names",
+    "never walks the same route twice",
+    "keeps a diary written backwards",
+    "hums extinct birdsongs",
+    "measures time in cups of tea",
+    "names every stray cat after a philosopher",
+    "folds origami from old maps",
+    "counts stairs in prime numbers",
+    "writes postcards to their future self",
+    "repairs things nobody asked about",
+    "grows herbs on a fire escape",
+    "photographs only shadows",
+    "trades stories instead of money",
+]
+WRITING_SETTINGS = [
+    "a city built on canals",
+    "the last train of the year",
+    "an island with two lighthouses",
+    "a library that never closes",
+    "a rooftop greenhouse in winter",
+    "a border town between time zones",
+    "a harbor locked in fog",
+    "a village above the clouds",
+    "an abandoned funicular station",
+    "a floating market at dawn",
+]
+
+
+def build_writing_domain(
+    num_questions: int,
+    num_shots: int = 0,
+    max_tokens: int = 256,
+    cache_dir: str = "/tmp/moe_expert_routing",
+) -> Domain:
+    """Creative-writing domain: shared style-guide preamble, templated prompts."""
+    preamble = (
+        "You are a fiction writer for a literary magazine. House style: "
+        "write vivid, concrete prose in third person past tense; ground every "
+        "scene in sensory detail; prefer short declarative sentences; avoid "
+        "cliches, adverbs, and abstract summary; every story must contain one "
+        "specific object described twice, once early and once transformed at "
+        "the end; end on an image, not a moral. Stories are 150-200 words.\n\n"
+        "Example story:\nThe kettle had a dent shaped like a comma. Marta "
+        "filled it anyway, watching steam climb the kitchen window. Outside, "
+        "the ferry horn counted the morning into pieces. She wrote her "
+        "brother's address on the back of a receipt and weighed it down with "
+        "a spoon. The tide would be out by noon. She wanted to be on it, or "
+        "in the letter, or anywhere the kettle's whistle could not follow. "
+        "When it sang she poured two cups from habit and drank hers standing. "
+        "The second cup cooled beside the sink, a small gray lake. She "
+        "rinsed the kettle, packed it last, and carried the box downstairs. "
+        "On the curb the comma-shaped dent caught the sun, a bright pause in "
+        "the middle of the street's long sentence.\n\n"
+    )
+    combos = [
+        (s, q, w)
+        for s in WRITING_SUBJECTS
+        for q in WRITING_QUIRKS
+        for w in WRITING_SETTINGS
+    ]
+    prompts = [
+        preamble + f"Write a story about {s} who {q}, set in {w}.\nStory:"
+        for s, q, w in combos[:num_questions]
+    ]
+    return Domain(
+        name="writing",
+        prompts=prompts,
+        preamble=preamble,
+        stop=["\n\n\n"],
+        max_tokens=max_tokens,
+        num_shots=num_shots,
+        meta={"preamble_chars": len(preamble), "num_pool": len(prompts)},
+    )
+
+
 DOMAIN_BUILDERS = {
     "gsm8k": build_gsm8k_domain,
     "mbpp": build_mbpp_domain,
+    "squad": build_squad_domain,
+    "writing": build_writing_domain,
 }

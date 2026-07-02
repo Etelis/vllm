@@ -83,3 +83,69 @@ effect (workload held constant). The remaining step for a fully live demo is a
 real multi-replica llm-d / NVIDIA Dynamo deployment with its KV-aware router,
 measuring per-worker expert-load skew directly and confirming EPLB cannot close
 the gap the router opens.
+
+---
+
+## Live llm-d deployment (4x / 2x replicas behind the real inference scheduler)
+
+Setup: llm-d inference scheduler (EPP `llm-d-inference-scheduler:v0.7.0`,
+default guide profile `queue:2 + kv-cache-utilization:2 + prefix-cache:3`)
+behind an Istio Gateway-API gateway, InferencePool over vLLM replicas on
+H100-80GB (OpenShift). Driver sends both domains interleaved (fixed-seed
+shuffle) through the gateway; replica attribution via completion-id join
+against pod logs (`live_router_ab.py` / `live_analyze.py`).
+
+### Live Figure 1 — the router manufactures the skew (4x single-GPU replicas)
+
+Same 600 requests (300 GSM8K + 300 MBPP), identical replicas; only the EPP
+profile changes:
+
+- **load-only** (prefix scorer removed): domains mixed per replica
+  (~50/50 each), cross-replica expert JS **0.001 bits**, per-replica IR 6.78.
+- **default affinity profile**: all 300 MBPP -> one replica, all 300 GSM8K ->
+  another (two replicas idle), cross-replica JS **0.319 bits** = the full
+  math<->code divergence, per-replica IR 8.89.
+
+Live numbers reproduce the offline reconstruction almost exactly
+(IR 8.89/8.90, JS 0.319 vs cross-domain 0.318, per-domain cached tokens
+1264/563 vs 1264/561): the offline harness is a faithful router simulator.
+
+### Iteration 1 — standard-stack baselines under load (2x DP4+EP4 replicas)
+
+1000 requests (500+500 interleaved), max_tokens=384 (stop strings dropped),
+concurrency 128, affinity profile, `vllm/vllm-openai:v0.23.0`:
+
+| config | out tok/s | p50 | p90 | p99 |
+| --- | --- | --- | --- | --- |
+| EPLB off | **7574** | 5.86 | 8.23 | 10.36 |
+| stock EPLB (defaults, after a full warmup pass) | 6442 | 7.05 | 9.09 | 11.73 |
+
+**Stock EPLB loses ~15% throughput under affinity-pure traffic**: periodic
+rearrangement stalls + stats overhead outweigh placement gains, even with
+real imbalance available (balancedness mean 0.78, bursts to 0.36). Best
+standard config = EPLB off.
+
+### Iteration 2a — router-triggered one-shot specialization (our vLLM patch)
+
+vLLM branch adds `EplbState.schedule_forced_rearrangement()` (fires at an
+aligned step so all EP ranks rearrange the same step), forced-pending stats
+recording, and worker RPCs `trigger_eplb_rearrange` / `get_eplb_stats`
+(reachable via the `/collective_rpc` dev endpoint). Replicas run EPLB
+"trigger-only" (`step_interval=1000000`, no periodic rearrangement).
+
+Protocol: warmup pass (router pins domains) -> trigger both replicas ~15 s in
+(emulating the router->EPLB channel) -> measured pass on fitted placements.
+Both arms on identical branch pods, same seed; arm `off` never triggers.
+
+| arm | out tok/s | p50 | p90 | p99 |
+| --- | --- | --- | --- | --- |
+| off (EPLB armed, never triggered ~ EPLB off) | 7490 | 5.84 | 7.52 | 9.89 |
+| **ours (one-shot trigger after pin)** | **8720 (+16.4%)** | **4.72 (-19%)** | 7.89 | **9.08 (-8%)** |
+
+vs stock EPLB the gain is +35%. Even the warmup pass that absorbed the
+rearrangement stall beat the untriggered arm end-to-end (8313 vs 7490).
+Branch-vs-release sanity: arm off 7490 ~ iteration-1 EPLB-off 7574.
+
+Single run per arm so far; repeat cycles for error bars in progress. p90 is
+the one metric that crossed (7.89 vs 7.52) while p50/p99 improved - under
+investigation.

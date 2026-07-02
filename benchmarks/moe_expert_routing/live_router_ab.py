@@ -142,6 +142,17 @@ async def _run(args, domains: dict[str, Domain]) -> None:
             name, url = item.split("=", 1)
             replica_urls[name.strip()] = url.strip().rstrip("/")
 
+    # Optional client-side routing: domain=replica pairs; requests for a
+    # mapped domain go straight to that replica instead of the gateway.
+    route_map: dict[str, str] = {}
+    for item in (args.route_map or "").split(","):
+        if "=" in item:
+            dom_name, replica = item.split("=", 1)
+            route_map[dom_name.strip()] = replica_urls[replica.strip()]
+
+    def _target(domain_name: str) -> str:
+        return route_map.get(domain_name, args.base_url)
+
     # Interleave: fixed-seed shuffle of all (domain, question) pairs.
     order = [
         (name, i) for name, dom in domains.items() for i in range(len(dom.prompts))
@@ -160,14 +171,19 @@ async def _run(args, domains: dict[str, Domain]) -> None:
         for name, dom in domains.items():
             print(f"[{args.arm}] warming {name} preamble...")
             await _one_request(
-                session, args.base_url, dom.prompts[0], dom, args.seed, args.num_experts
+                session,
+                _target(name),
+                dom.prompts[0],
+                dom,
+                args.seed,
+                args.num_experts,
             )
 
         async def _guarded(pos: int, name: str, idx: int):
             async with sem:
                 rec = await _one_request(
                     session,
-                    args.base_url,
+                    _target(name),
                     domains[name].prompts[idx],
                     domains[name],
                     args.seed,
@@ -234,6 +250,7 @@ async def _run(args, domains: dict[str, Domain]) -> None:
         "seed": args.seed,
         "max_concurrency": args.max_concurrency,
         "max_tokens_override": args.max_tokens,
+        "route_map": args.route_map,
         "domains": list(domains),
         "num_ok": len(hists),
         "num_total": len(table),
@@ -274,6 +291,11 @@ def main() -> None:
     parser.add_argument("--max-concurrency", type=int, default=32)
     parser.add_argument("--request-timeout", type=float, default=600.0)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--route-map",
+        default="",
+        help="domain=replica pairs for client-side routing (bypasses gateway)",
+    )
     parser.add_argument(
         "--replica-urls",
         default="",
