@@ -571,7 +571,9 @@ class EplbState:
                 eplb_model_state.expert_load_pass.zero_()
 
         rebalance_threshold = self.parallel_config.eplb_config.rebalance_threshold
-        monitor_balancedness = log_stats or (rebalance_threshold > 0 and not is_dummy)
+        # NOTE: this gate must be uniform across EP ranks (is_dummy is not):
+        # the monitor performs a collective sync of the load pass.
+        monitor_balancedness = log_stats or rebalance_threshold > 0
         if (
             monitor_balancedness
             and self.expert_rearrangement_step
