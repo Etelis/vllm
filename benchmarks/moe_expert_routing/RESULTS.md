@@ -258,3 +258,43 @@ cumulative-load staleness in naive threshold monitoring). The EPLB
 benefit-regime question moves to wide-EP / network-bound / many-expert
 scale, and the routing-layer value (grouping, redundancy<->KV memory) to
 future work with same-pod protocols.
+
+## Stepwise validated build (post-audit protocol)
+
+### Step 1 - expert distributions (charts: make_charts.py)
+
+1000 live-captured prompts (500/domain). Gates: GSM8K top-8 hot experts
+reproduce the original study exactly (4,18,22,27,44,46,87,99); MBPP 7/8;
+per-layer top-8 Jaccard mean 0.134 (study: 0.132); layer 6 most divergent in
+both. Layer 6: top-8 of 128 experts carry 43% (math) / 41% (code) of tokens;
+per-expert workload exclusivity spans 4 orders of magnitude (e40: 10% of code
+tokens, 0.0006% of math).
+
+### Step 2 - rank-load model with vLLM's real placement algorithm (step2_placement.py)
+
+vllm/distributed/eplb/policy/default.py (numpy) applied to step-1 loads.
+Gates: fitted beats default at every domain x EP in {2..32}; EP4-default
+predicted balancedness 0.82 vs 0.78 measured live; anti-fitted == default
+(both ~random for the serving workload). Headroom grows with EP: fitted
+holds 1.0 through EP8 while default/anti decay 0.82 (EP4) -> 0.66 (EP8) ->
+0.50 (EP16) -> 0.36 (EP32).
+
+### Step 3 - empirical cross-node EP8 (2 nodes x 4 GPU, all-to-all over TCP)
+
+Same-pod crux (wep_crux.sh): serve mbpp on a gsm8k-fitted (anti) placement,
+trigger refit mid-traffic, remeasure identical traffic:
+
+| pass | tok/s | p50 | p99 |
+| --- | --- | --- | --- |
+| anti-fitted | 1072 | 35.8 | 74.3 |
+| refitted | **1123 (+4.7%)** | 34.6 | **69.4 (-6.6%)** |
+
+Direction confirmed with the trustworthy protocol; all three metrics move
+together. Magnitude is capped by comm-latency dominance: cross-node EP over
+TCP runs ~8x slower than single-node EP4/NVLink (1.1K vs 8.6K tok/s), so
+compute-balance gains are diluted by the latency floor. The realistic
+wide-EP regime (RDMA/RoCE, bandwidth-bound all-to-all) remains untested:
+first RoCE attempt failed on NCCL device selection (NCCL_IB_HCA=mlx5 also
+matches storage SR-IOV VFs -> "GID table changed" crash); needs explicit
+HCA pinning. Ops notes: multi-node vLLM DP behind a headless Service needs
+publishNotReadyAddresses=true (readiness/DNS bootstrap deadlock).
