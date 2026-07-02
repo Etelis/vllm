@@ -298,3 +298,39 @@ first RoCE attempt failed on NCCL device selection (NCCL_IB_HCA=mlx5 also
 matches storage SR-IOV VFs -> "GID table changed" crash); needs explicit
 HCA pinning. Ops notes: multi-node vLLM DP behind a headless Service needs
 publishNotReadyAddresses=true (readiness/DNS bootstrap deadlock).
+
+### Step 4 - RDMA regime attempt (negative result, ops trail)
+
+Goal: rerun the step-3 crux with the all-to-all on RoCE/GDR instead of TCP.
+Five configurations were attempted on the 2-node testbed; cross-node NCCL
+formation never stabilized:
+
+1. `NCCL_IB_HCA=mlx5` (wildcard) + GID 3: rings formed, then fatal
+   "GID table changed" on a flapping PF (mlx5_4).
+2. Exclusion list + GID auto: NCCL selected GID 0 (link-local, not routable
+   from the pod netns) -> every QP failed INIT->RTR ("No such device").
+3. Exclusion list + GID 3: GID-table churn now visible on many PFs
+   (mlx5_5/8/9/16/17) - the Multi-NIC CNI rewrites PF GID tables on every
+   pod attach/detach cluster-wide, so churn is continuous on a busy cluster.
+4. - fabric attachment (multi-nic-compute NAD from
+   openshift-sriov-network-operator, 16 net1-* interfaces with stable pod
+   IPs, MTU 9000) + IPC_LOCK/SYS_RAWIO + privileged SCC (the recipe copied
+   from a working llm-d GDR deployment in vela-on-prem-operations): no
+   crash, but formation hung >40 min amid ongoing GID-change rescans.
+5. vela-minimal NCCL env (no GID pin, NCCL_SOCKET_IFNAME=net1-0): did not
+   form within a 25-minute decision gate.
+
+Conclusion: cross-node NCCL EP on this multi-tenant Multi-NIC fabric is
+blocked by continuous GID-table churn; notably the working GDR consumer on
+this cluster (vela llm-d P/D pods) never runs cross-node NCCL - its
+cross-pod path is UCX/NIXL. The llm-d wide-EP lane (LWS + DeepEP) is the
+supported route and a follow-up should test DeepEP's RDMA path instead of
+NCCL. Ops notes worth keeping: publishNotReadyAddresses=true is required
+for the DP-coordinator headless Service; the fabric-attach recipe is
+NAD multi-nic-compute@openshift-sriov-network-operator + rdma/roce_gdr:1 +
+IPC_LOCK/SYS_RAWIO + privileged SCC.
+
+**Step-4 verdict stands on TCP: placement refit converts +4.7% tok/s /
+-6.6% p99 at cross-node EP8 (same-pod), with conversion capped by the
+comm-latency floor; the balancedness headroom model (step 2) predicts the
+gap grows with EP width and fabric bandwidth.**
