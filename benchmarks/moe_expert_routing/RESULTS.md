@@ -146,6 +146,9 @@ vs stock EPLB the gain is +35%. Even the warmup pass that absorbed the
 rearrangement stall beat the untriggered arm end-to-end (8313 vs 7490).
 Branch-vs-release sanity: arm off 7490 ~ iteration-1 EPLB-off 7574.
 
+**RETRACTED (see audit below): the off/ours gap did not survive replication
+and is attributed to pod/node-placement confounding, not the trigger.**
+
 Repeated with fresh pod restarts (independent placements, caches, nodes):
 
 | arm | rep1 | rep2 | mean | p50 (reps) | p99 (reps) |
@@ -179,3 +182,51 @@ a stable mix. The router channel's remaining value is proactivity under
 traffic drift (re-pin/scale events, where reactive detection must first
 suffer the imbalance and cooldown gates back-to-back refits) and
 cross-replica grouping decisions - measured next.
+
+### Audit - the +15% does not survive falsification (RETRACTION)
+
+Controlled decomposition of the iteration-2a gap:
+
+| tok/s | never rearranged | rearranged |
+| --- | --- | --- |
+| through gateway | 7549 +-0.8% (original) / **8601 (rep3 rerun)** | 8689 +-0.4% |
+| direct to pods | 8761 | 8544-8590 |
+
+- Same-pod fitted-vs-anti-fitted A/B (`crux`): **placement fit is worth ~1%**
+  at Qwen3-30B-A3B EP4/NVLink - the benefit available to any placement policy
+  at this scale is small.
+- Confounds ruled out one by one: completion lengths identical (382.7+-0.2
+  mean across all arms), prefix-cache hits identical (933-939 mean, zero cold
+  requests), no hidden mid-run refits (trigger counts audited), placements
+  verified via get_eplb_stats.
+- rep3 rerun of the exact original off protocol is fast (8601): the original
+  slow off pair is attributed to node/time confounding (restart-per-arm =
+  node lottery on a shared cluster; a partially-busy neighbor GPU slows the
+  whole DP wave). The +15.1% causal claim is retracted.
+
+What survives the audit:
+
+1. **Figure 1 (unaffected):** cache-affinity routing manufactures
+   cross-replica expert heterogeneity (JS 0.001 -> 0.319 live, matching the
+   offline reconstruction). This is a routing-layer fact.
+2. **Placement fit ~1% at EP4/NVLink (new, solid):** the only same-pod
+   controlled comparison in the series. Implication: EPLB benefit at this
+   scale is small; its regime is wide-EP / network-bound dispatch /
+   many-expert models.
+3. **The machinery (solid):** synchronized forced rearrangement (aligned-step
+   design verified: all EP ranks fire the same step), balancedness-threshold
+   auto-trigger (detected imbalance 0.6975 < 0.70 and refit autonomously),
+   EPLB stats RPC, and the rank-uniform-gating bug found and fixed
+   (is_dummy-dependent gate around a collective hangs workers).
+4. **Iteration-1's stock-EPLB harm (needs re-validation):** B1/B2 ran on
+   different pod generations, so the -15% magnitude is exposed to the same
+   confound; the rearrangement-stall cost itself is real and independently
+   reported upstream.
+5. **Drift finding:** at hard re-pins the dominant cost is prefix-cache loss,
+   not placement (refit-at-flip bought nothing); threshold 0.7 also slept
+   through the flip (anti-fitted ~ random placement does not necessarily
+   breach a threshold tuned for onset).
+
+Methodology rule going forward: **same-pod A/Bs only** (flip route-maps or
+config on live pods); restart-per-arm comparisons are not trustworthy on a
+shared cluster.
