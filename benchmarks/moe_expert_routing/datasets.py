@@ -304,9 +304,53 @@ def build_writing_domain(
     )
 
 
+def build_tenants_domain(
+    num_questions: int,
+    num_shots: int = 20,
+    max_tokens: int = 64,
+    cache_dir: str = "/tmp/moe_expert_routing",
+    num_tenants: int = 96,
+) -> Domain:
+    """Many-tenant GSM8K: each tenant has a distinct shot-ordering preamble.
+
+    Distinct byte-level prefixes per tenant make the combined prefix working
+    set large (num_tenants x preamble), while questions cycle tenants
+    round-robin - the workload for cache-partitioning experiments: one
+    replica cannot hold all tenants' prefixes, a fleet can.
+    """
+    import random as _random
+
+    train = list(_read_jsonl(_download_and_cache(GSM8K_TRAIN_URL, cache_dir)))
+    test = list(_read_jsonl(_download_and_cache(GSM8K_TEST_URL, cache_dir)))
+    rng = _random.Random(1234)
+    pre = []
+    for _t in range(num_tenants):
+        shots = rng.sample(range(256), num_shots)
+        pre.append(
+            "".join(
+                f"Question: {train[i]['question']}\nAnswer: {train[i]['answer']}\n\n"
+                for i in shots
+            )
+        )
+    prompts = [
+        pre[i % num_tenants] + f"Question: {test[i % len(test)]['question']}\nAnswer:"
+        for i in range(num_questions)
+    ]
+    return Domain(
+        name="tenants",
+        prompts=prompts,
+        preamble=pre[0],
+        stop=["Question", "<|separator|>"],
+        max_tokens=max_tokens,
+        num_shots=num_shots,
+        meta={"num_tenants": num_tenants, "preamble_chars": len(pre[0])},
+    )
+
+
 DOMAIN_BUILDERS = {
     "gsm8k": build_gsm8k_domain,
     "mbpp": build_mbpp_domain,
     "squad": build_squad_domain,
     "writing": build_writing_domain,
+    "tenants": build_tenants_domain,
 }

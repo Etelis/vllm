@@ -509,3 +509,44 @@ KV pressure, against a placement-fit gain of ~1% (NVLink) to ~4%
 weight is net-negative for KV-bound serving at EP16 and net-neutral-to-
 positive only where all-to-all is network-bound and KV is not the binding
 constraint** - the regime map the pipeline now encodes.
+
+## The cache term completes the equation (multi-tenant, measured live)
+
+Workload: 96 tenants, each with a distinct ~3.6K-token preamble (20-shot
+shuffled GSM8K), 960 requests interleaved, decode 64, concurrency 96, four
+1-GPU replicas (118,176-token KV pool each) behind llm-d. Prefix working
+set ~350K tokens: does not fit one replica, fits the fleet if partitioned.
+Both arms cold-started, warmup pass + measured pass (same protocol).
+
+| routing | hit rate | goodput | p50 | p99 |
+| --- | --- | --- | --- | --- |
+| load-only (prefix scorer off) | 27.8% | 2367 tok/s | 2.50 s | 3.63 s |
+| prefix-affinity (llm-d default) | **98.5%** | **4183 tok/s (+77%)** | **1.31 s (-48%)** | 2.63 s (-28%) |
+
+Mechanism: load-only routing duplicates every tenant's prefix across all
+replicas, overflowing each 118K pool (thrash: 28% hits, constant 3.6K-token
+re-prefills); affinity partitions 24 tenants/replica (~87K, fits) - 98.5%
+hits. A mild-window variant (240 tenants x ~0.5K preambles, working set
+~fits one pool - caused by a driver default passing 3-shot preambles, kept
+as an honest scope point) still showed 98.7% vs 72.9% hits but only +4%
+goodput / -9% p99: **the cache term's size is set by the ratio of prefix
+working set to per-replica pool, not by hit-rate deltas alone.**
+
+### The complete, measured trade equation for router affinity
+
+  net(affinity) = cache_term + placement_term - redundancy_tax
+
+- **cache_term**: 0 when the working set fits every replica; **+77%
+  goodput / -48% p50** when it exceeds one pool but fits the partitioned
+  fleet (this section); degrades again if per-replica shares overflow.
+- **placement_term**: +1% (NVLink) to +4% (network-bound EP8) via
+  trigger-fitted EPLB placements.
+- **redundancy_tax**: 0 slots at EP4/EP8; 16 slots at EP16 for pure traffic
+  = 4,712 KV tokens/rank each ~ -3.7% goodput when KV-bound.
+
+The earlier "affinity is net-negative at KV-bound EP16" verdict holds only
+when the cache term is inactive. When the multi-tenant window is open, the
+cache term dominates everything else by an order of magnitude - and the
+KV-pool arithmetic (working set vs pool sizes, both of which EPLB
+redundancy shrinks) is what the pipeline computes to decide the router
+weight and redundancy jointly.

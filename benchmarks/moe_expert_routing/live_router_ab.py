@@ -304,7 +304,11 @@ def main() -> None:
     parser.add_argument("--out-dir", required=True)
     args = parser.parse_args()
 
-    shots = {"gsm8k": args.gsm8k_shots, "mbpp": args.mbpp_shots}
+    shots = {
+        "gsm8k": args.gsm8k_shots,
+        "mbpp": args.mbpp_shots,
+        "tenants": args.gsm8k_shots,
+    }
     domains: dict[str, Domain] = {}
     for name in [d.strip() for d in args.domains.split(",") if d.strip()]:
         if name not in DOMAIN_BUILDERS:
