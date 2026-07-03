@@ -458,3 +458,31 @@ Local/analytical attack surface is exhausted after three rounds. Remaining
 attacks require new data: other concentration profiles (256-expert models -
 does the redundancy reversal generalize?), >2-domain captures, and the
 RDMA-regime conversion point.
+
+## Live redundancy <-> KV economics (EP4/H100, single node, measured 2026-07-03)
+
+`num_redundant_experts` swept 0/16/32 on the same deployment (verified in
+pod args after an earlier silent sed failure - patch configs via JSON edit,
+never sed on YAML):
+
+| redundant slots (per rank) | KV pool (tokens/rank) | delta | tok/s | mean cached |
+| --- | --- | --- | --- | --- |
+| 0 (0) | 514,192 | - | 7360-7555 | 937 |
+| 16 (4) | 495,344 | -3.7% | 7074 | 940 |
+| 32 (8) | 476,496 | -7.3% | 6691 | 939 |
+
+- **Exactly linear: 4,712 KV tokens per redundant slot per rank** (both
+  deltas divide evenly; the 32-slot pool was predicted to 4 tokens).
+- Hit-rate is stable across configs (the workload does not saturate KV);
+  the KV cost converts to hit-rate/goodput loss only under KV pressure -
+  the pipeline reports the token cost directly.
+- Throughput declined ~5.4% from red16 to red32 on the *same node*
+  (consecutive pod IPs), suggesting a real compute cost of replication
+  (more, smaller expert groups + hash dispatch) beyond the memory cost;
+  red0-vs-red16 crosses nodes (restart variance +-1.3% same-config), so
+  treat the throughput column with the usual caution, the KV column is
+  deterministic engine accounting.
+- Closes the loop on the EP16 purity finding: the 16 extra slots that
+  domain-pure traffic requires cost a measured ~4,712 KV tokens/rank
+  (~0.9% of pool per slot-per-rank at this config) - the price of purity
+  is now in real units, and pipeline.py quotes it in recommendations.

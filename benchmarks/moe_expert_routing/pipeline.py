@@ -193,6 +193,10 @@ class Pipeline:
             out[f"{p:.1f}"] = round(float(js_bits(usage(am), usage(bm)).mean()), 3)
         return out
 
+    # Measured live on Qwen3-30B-A3B EP4/H100 (redundant slots 0/16/32:
+    # KV pool 514,192 / 495,344 / 476,496 tokens per rank - exactly linear).
+    KV_TOKENS_PER_REDUNDANT_SLOT_PER_RANK = 4712
+
     # -- stage 6: recommendation ----------------------------------------------
     def recommend(self, ep: int, fabric: str, target: float) -> dict:
         table = self.placement_table((ep,))
@@ -229,11 +233,15 @@ class Pipeline:
             )
         pure_r, mixed_r = red_row.get("pure"), red_row.get("mixed")
         if pure_r is not None and mixed_r is not None and pure_r > mixed_r:
+            kv_cost = (
+                (pure_r - mixed_r) // ep * self.KV_TOKENS_PER_REDUNDANT_SLOT_PER_RANK
+            )
             g.append(
                 f"Affinity purity costs memory here: pure traffic needs {pure_r} "
-                f"redundant slots vs {mixed_r} mixed for balancedness>={target}. "
-                "Cap prefix-affinity scorer weight or spend the slots knowingly "
-                "(each slot displaces KV cache)."
+                f"redundant slots vs {mixed_r} mixed for balancedness>={target} "
+                f"(~{kv_cost:,} KV tokens/rank at the measured "
+                f"{self.KV_TOKENS_PER_REDUNDANT_SLOT_PER_RANK:,}/slot). "
+                "Cap prefix-affinity scorer weight or spend the slots knowingly."
             )
         elif pure_r is not None and mixed_r is not None and pure_r < mixed_r:
             g.append(
