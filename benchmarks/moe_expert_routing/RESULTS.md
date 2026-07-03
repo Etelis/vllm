@@ -486,3 +486,26 @@ never sed on YAML):
   domain-pure traffic requires cost a measured ~4,712 KV tokens/rank
   (~0.9% of pool per slot-per-rank at this config) - the price of purity
   is now in real units, and pipeline.py quotes it in recommendations.
+
+### KV pressure: the pool converts to goodput ~1:1 (same node, deterministic)
+
+Saturating closed-loop workload (gsm8k only, 896 requests, concurrency 448,
+3072-token generations - vLLM admission-controls, so pressure appears as
+queueing, not preemptions; hit counters identical across configs):
+
+| config | KV pool (tok/rank) | goodput | p50 | p99 |
+| --- | --- | --- | --- | --- |
+| redundant=32 | 476,496 | 6646 tok/s | 178.7 s | 245.9 s |
+| redundant=0 | 514,192 (+7.9%) | **7184 tok/s (+8.1%)** | 161.1 s (-9.9%) | 207.6 s (-15.6%) |
+
+Consecutive pod IPs (same node), deterministic pool sizes, identical
+prefix-hit counts (1,128,752/1,192,315 = 94.7% both): under KV-bound load,
+**goodput scales with the KV pool almost exactly** (+8.1% vs +7.9%).
+
+This prices the whole trade in one currency: at EP16, domain-pure traffic's
+16 required redundant slots cost 3.7% of the KV pool = ~3.7% goodput under
+KV pressure, against a placement-fit gain of ~1% (NVLink) to ~4%
+(network-bound EP8). **On this model at these widths, the router's affinity
+weight is net-negative for KV-bound serving at EP16 and net-neutral-to-
+positive only where all-to-all is network-bound and KV is not the binding
+constraint** - the regime map the pipeline now encodes.
