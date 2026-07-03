@@ -253,6 +253,15 @@ class Pipeline:
                 "Redundancy needs are purity-insensitive at this width; choose "
                 "router weights on cache-hit grounds alone."
             )
+        g.append(
+            "Cache term (dominant when active): if the tenant prefix working "
+            "set exceeds one replica's KV pool but fits the fleet partitioned, "
+            "prefix-affinity routing is worth far more than any expert-side "
+            "term (measured: +77% goodput / -48% p50 at 3x pool overload vs "
+            "27.8%-hit thrashing). Compute: working_set = tenants x prefix "
+            "tokens; compare against per-replica pool (and remember redundant "
+            "slots shrink that pool by 4,712 tokens each)."
+        )
         if fabric == "nvlink":
             g.append(
                 "On NVLink-class fabric the placement effect on throughput is "

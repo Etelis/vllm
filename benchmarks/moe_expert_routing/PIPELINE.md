@@ -24,6 +24,14 @@ python -m benchmarks.moe_expert_routing.pipeline \
 
 ## The headline findings it encodes
 
+0. **The cache term dominates when active.** With 96 tenants x 3.6K-token
+   prefixes against 118K-token replica pools (working set > one pool, fits
+   the fleet), prefix-affinity vs load-only routing = 98.5% vs 27.8% hits =
+   **+77% goodput, p50 -48%** (measured, cold-start protocol both arms).
+   The window is pure arithmetic the pipeline computes: working set vs
+   per-replica pool - a pool that expert redundancy shrinks by a measured
+   4,712 tokens/slot.
+
 1. **The router decides who is hot.** llm-d's default prefix-affinity scorer
    turns interchangeable replicas into expert-divergent silos (math/code
    share ~13% of hot experts). High-purity effect: 80% affinity yields only
