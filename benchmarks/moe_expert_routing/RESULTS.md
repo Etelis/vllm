@@ -35,7 +35,8 @@ two ways, 75 prompts/worker either way — only the assignment differs:
 - **cache-affinity** (each worker gets one domain): per-worker IR 8.90,
   cross-worker JS **0.182 bits**.
 - **Manufactured imbalance: per-worker IR +2.13, cross-worker JS +0.18 bits
-  (0.002 → 0.182, ~90×).**
+  (0.002 -> 0.182; the baseline is the sampling noise floor, so the
+  meaningful statistic is the +0.18-bit difference, not the ratio).**
 
 Under shuffled routing the 8 workers are statistically interchangeable
 (cross-worker JS ≈ 0), so one cluster-wide EPLB placement fits all of them.
@@ -334,3 +335,67 @@ IPC_LOCK/SYS_RAWIO + privileged SCC.
 -6.6% p99 at cross-node EP8 (same-pod), with conversion capped by the
 comm-latency floor; the balancedness headroom model (step 2) predicts the
 gap grows with EP width and fabric bandwidth.**
+
+## Red-team pass (adversarial self-review; analyses in redteam_analyses.py)
+
+Attacking our own findings for sense and scope. Six items, two of which
+reverse earlier framings:
+
+1. **Figure 1 is a high-purity phenomenon (scope correction).** Mixing-curve
+   analysis on the measured histograms: cross-replica JS vs routing purity is
+   superlinear - 80% purity yields only ~30% of the full divergence
+   (0.083 of 0.275 bits), 60% purity is negligible (0.009). Production
+   deployments where load-spill dilutes affinity will see proportionally
+   little expert heterogeneity; the measured full-separation case is the
+   pure-affinity limit, real at low load and under strict session pinning.
+   Also: quote the JS *difference*, never the ratio to the 0.001 noise floor.
+
+2. **The redundancy flywheel spins backwards (hypothesis refuted).** Using
+   the real placement algorithm with replication: at EP16, domain-pure
+   traffic needs 16 redundant slots for balancedness >= 0.95 while 50/50
+   mixed traffic needs 0; at EP8 neither needs any; at EP32 both need 32.
+   Mechanism: mixing disjoint hot-sets flattens peaks below rank fair-share;
+   purity sharpens the top expert (~10% of layer tokens) past EP16 rank
+   capacity (6.25%), forcing replication. The original "purity -> fewer
+   redundant experts -> more KV" hypothesis is wrong for this model's
+   concentration profile; if anything, affinity routing *raises* the memory
+   cost of balance at the widths where redundancy starts to matter.
+
+3. **Step-3 (+4.7%) needs a drift bound (kept, tightened).** Same-config
+   late-pass repeats elsewhere in the session bound non-placement
+   pass-order drift to <=~0.5-1%; the anti->refit measurement spans two
+   pass positions, so the placement-attributable effect is ~3.7-4.5%,
+   with p99 co-movement (-6.6%) as supporting evidence. n=1 (the repeat
+   was sacrificed to the RoCE roll); treat as a single validated point.
+
+4. **Result files are mutable state (process defect, caught).** The wep_*
+   output dirs were partially overwritten by a later racing launch against
+   a crashing cluster (mtimes prove it: m_refit 20:45 original; g_*/m_anti
+   20:49-20:58 with 400/500 connection errors). The step-3 numbers stand
+   because the completed chain printed them at 20:45 before contamination.
+   Rule: archive result JSONs off-pod at run completion; unique out-dirs
+   per launch.
+
+5. **RoCE root cause is unproven (wording corrected).** "Blocked by GID
+   churn" was a correlation; alternates (MTU/routing across 16 ipvlan
+   subnets, NCCL cross-NIC pairing) were not isolated. Honest statement:
+   formation never stabilized amid continuous GID-change rescans; root
+   cause not established; DeepEP-over-LWS is the supported path to test.
+
+6. **Small-batch check (model survives).** Per-batch balancedness at EP8
+   with batches of 4/16/64/256 prompts: fitted 0.97-1.00 vs default ~0.66
+   at every batch size - the aggregate-load model is not a large-batch
+   artifact.
+
+Net position after red-teaming: what makes sense and survives is (i) the
+routing->expert-identity phenomenon *in the high-purity regime*, (ii) the
+calibrated placement/headroom model incl. small-batch validity, (iii) a
+single same-pod ~4% conversion point at network-bound EP8, and (iv) the
+trigger/threshold machinery. What does not survive: the redundancy/memory
+dividend of purity (reversed), any router-over-engine advantage at steady
+state (iter-3), refit value at cache-destroying flips (iter-4), and all
+restart-per-arm throughput comparisons. The strongest remaining research
+line is characterizing *when* purity pays (wide-EP bandwidth-bound
+all-to-all) versus when it costs (redundancy at EP16+), which is a
+placement-economics question the router must be aware of - a more nuanced,
+and more defensible, version of the original idea.
