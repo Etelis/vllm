@@ -399,3 +399,32 @@ line is characterizing *when* purity pays (wide-EP bandwidth-bound
 all-to-all) versus when it costs (redundancy at EP16+), which is a
 placement-economics question the router must be aware of - a more nuanced,
 and more defensible, version of the original idea.
+
+### Red-team round 2 (attacking the round-1 corrections; redteam_round2.py)
+
+1. **Redundancy reversal survives its own audit.** Threshold sensitivity:
+   the EP16 pure-needs-16 / mixed-needs-0 split holds for balancedness
+   targets 0.90 and 0.95 (pure r=0 sits at 0.847, mixed at 0.984) and
+   converges to equal-16/16 only at 0.99. Dispatch-model sensitivity:
+   vLLM selects among an expert's replicas by a Knuth multiplicative hash
+   of the token index mod replica count (fused_moe/router/base_router.py),
+   i.e. uniform in expectation - matching the analysis's ideal-split
+   assumption; the worst-case bracket (all load on one replica, where
+   replication would *hurt*) is not the shipped behavior.
+
+2. **Step-1 statistics are stable.** Bootstrap over prompts (500
+   resamples): JS mean 0.275 with 95% CI [0.273, 0.278]; per-layer top-8
+   Jaccard 0.133 with CI [0.126, 0.143]. No fragility.
+
+3. **The +4.7% is quantitatively coherent with comm dominance.** With the
+   TCP/NVLink step-time ratio implying ~87% added-comm share, a refit that
+   removes the 0.66->1.0 max-rank penalty predicts +1.9/3.2/4.4% for MoE =
+   30/50/70% of the non-comm budget. Observed 4.7% (drift-adjusted
+   ~3.7-4.5%) sits in the coherent band for an A3B MoE where expert FFNs
+   dominate compute. No anomaly; also explains why the TCP regime caps
+   conversion.
+
+Attacks that failed to land are as informative as the two that landed in
+round 1: the phenomenon's statistics, the placement model's engine
+assumptions, and the single live conversion point are internally
+consistent.
