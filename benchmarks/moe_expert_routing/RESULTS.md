@@ -550,3 +550,26 @@ cache term dominates everything else by an order of magnitude - and the
 KV-pool arithmetic (working set vs pool sizes, both of which EPLB
 redundancy shrinks) is what the pipeline computes to decide the router
 weight and redundancy jointly.
+
+### Window map: the boundaries are predictable arithmetic
+
+Sweeping the tenant prefix working set against fixed pools (118,176
+tokens/replica x 4 replicas), measured both routing arms at each point:
+
+| working set | load-only hits / tok/s | affinity hits / tok/s | affinity advantage |
+| --- | --- | --- | --- |
+| 116K (32 tenants) | 85.9% / 3501 | 99.8% / 4427 | +26% |
+| 350K (96 tenants) | 27.8% / 2367 | 98.5% / 4183 | **+77%** |
+| 580K (160 tenants) | 17.3% / 2243 | 64.4% / 3103 | +38% |
+
+The measured curves land on the pool-arithmetic boundaries: affinity holds
+~99% hits until its per-replica share (WS/4) exceeds one pool (160-tenant
+point: 145K > 118K -> 64%), and load-only decays as soon as duplication
+inflates the effective working set past the fleet. One refinement over the
+naive prediction: load-only pays a duplication tax even *below* the
+single-pool boundary (86% vs 99.8% hits at 116K), so affinity never lost in
+the tested range - the "window" has a soft lower edge set by the
+duplication factor, not a hard wall. The advantage peaks mid-window (+77%)
+exactly where the arithmetic says partitioning matters most. This is the
+pipeline's core claim demonstrated end-to-end: the regime is computable
+from working-set and pool sizes before you deploy anything.
