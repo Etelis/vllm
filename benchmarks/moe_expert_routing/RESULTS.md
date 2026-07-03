@@ -428,3 +428,33 @@ Attacks that failed to land are as informative as the two that landed in
 round 1: the phenomenon's statistics, the placement model's engine
 assumptions, and the single live conversion point are internally
 consistent.
+
+### Red-team round 3 (capture semantics, layer scope, asymmetry)
+
+1. **Preamble-artifact attack fails (Figure 1 strengthened).** Verified in
+   source: the routed-experts capturer records router `topk_ids` from
+   forward passes only (routed_experts_capturer.py; output_processor
+   concatenates per-step chunks) - prefix-cache-HIT tokens never route and
+   contribute nothing. With ~60-85% of prompt tokens cache-hit in our runs,
+   the measured divergence is generation-content-driven, not shared-preamble
+   copying. Corollary scope note: histograms under-represent full-prefill
+   routing.
+
+2. **Layer-6 charts are labeled correctly but the story is not layer-6-
+   specific.** Per-layer default-placement balancedness at EP8 (gsm8k):
+   layer 6 = 0.55, median layer = 0.68, worst = 0.50 (layer 45), best =
+   0.82 - every layer is materially imbalanced under default placement,
+   and all model/redundancy conclusions already use full 48-layer weights.
+
+3. **Asymmetric splits add nothing new:** the 2-replica JS depends on the
+   purity margin exactly as the symmetric mixing curve (70/30 -> 0.036,
+   90/10 -> 0.156).
+
+4. **Scope label added:** the "~8x TCP collapse" is a single-point
+   observation (Qwen3-30B-A3B, DP8+EP8 over 2 nodes, concurrency 128, this
+   cluster's pod network) - a regime marker, not a general constant.
+
+Local/analytical attack surface is exhausted after three rounds. Remaining
+attacks require new data: other concentration profiles (256-expert models -
+does the redundancy reversal generalize?), >2-domain captures, and the
+RDMA-regime conversion point.
