@@ -84,6 +84,12 @@ async def _fetch_replica_metrics(urls: dict[str, str]) -> dict[str, dict[str, fl
     return out
 
 
+async def _served_model(session: aiohttp.ClientSession, base_url: str) -> str:
+    async with session.get(f"{base_url}/v1/models") as resp:
+        resp.raise_for_status()
+        return (await resp.json())["data"][0]["id"]
+
+
 async def _one_request(
     session: aiohttp.ClientSession,
     base_url: str,
@@ -92,9 +98,10 @@ async def _one_request(
     seed: int,
     num_experts: int,
     max_tokens_override: int | None = None,
+    model: str = "Qwen/Qwen3-30B-A3B",
 ) -> dict:
     payload = {
-        "model": "Qwen/Qwen3-30B-A3B",
+        "model": model,
         "prompt": prompt,
         "temperature": 0.0,
         "max_tokens": max_tokens_override or domain.max_tokens,
@@ -164,6 +171,8 @@ async def _run(args, domains: dict[str, Domain]) -> None:
     os.makedirs(args.out_dir, exist_ok=True)
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
+        model = args.model or await _served_model(session, args.base_url)
+        print(f"[{args.arm}] model: {model}")
         metrics_before = await _fetch_replica_metrics(replica_urls)
 
         # Seed each shared preamble once (first touch pins the prefix under an
@@ -177,6 +186,7 @@ async def _run(args, domains: dict[str, Domain]) -> None:
                 dom,
                 args.seed,
                 args.num_experts,
+                model=model,
             )
 
         async def _guarded(pos: int, name: str, idx: int):
@@ -189,6 +199,7 @@ async def _run(args, domains: dict[str, Domain]) -> None:
                     args.seed,
                     args.num_experts,
                     args.max_tokens,
+                    model=model,
                 )
                 return pos, name, idx, rec
 
@@ -282,6 +293,9 @@ def main() -> None:
     parser.add_argument("--gsm8k-shots", type=int, default=8)
     parser.add_argument("--mbpp-shots", type=int, default=3)
     parser.add_argument("--num-experts", type=int, default=128)
+    parser.add_argument(
+        "--model", default=None, help="served model id (default: query /v1/models)"
+    )
     parser.add_argument(
         "--max-tokens",
         type=int,

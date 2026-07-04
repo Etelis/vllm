@@ -684,3 +684,46 @@ FP8. Under MLA the KV cache is only ~70 KB/token, so one slot displaces
 redundant slots at EP16, 2/rank) spends roughly 18% of each rank's KV pool
 on redundancy. The clamp question is not academic at DeepSeek scale; it is
 the first thing to check.
+
+## Second model: the clamp validated at 235B scale
+
+Same protocol as the keystone, bigger stakes: Qwen3-235B-A22B-FP8 (94 MoE
+layers, ~19 MB experts), 2x TP4+EP4 replicas, llm-d prefix-affinity, fixed
+116-tenant workload (share 210,540 tokens/replica = 91% of the red=0
+pool). The clamp's verdict was committed *before* the measurement
+(pre-registered): requested 8 slots -> refuse all ("overflow, fill 135%,
+expect cache collapse"); granted 0 -> "edge, fill 91%, partial eviction".
+
+| redundant slots | pool/replica | WS fill | hit rate | goodput | p50 |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 230,224 | 91% | **84.2%** | 1,248 tok/s | 3.34 s |
+| 8 | 155,696 | 135% | **9.5%** | 527 tok/s | 7.34 s |
+
+Eight redundant slots - 6% of the expert count - cost 58% of goodput.
+Both predicted regimes matched: 84.2% is partial eviction at the edge;
+9.5% is statistically the cold floor (warm pass: 1.5-1.8%).
+
+**The slot-cost scaling law holds across models.** Predicted before boot
+from `expert_bytes / kv_bytes_per_token_per_gpu`: ~9,220 tokens/slot.
+Measured: (230,224 - 155,696) / 8 = **9,316** (1% error). With the 30B's
+4,712 (exact at six points across DP4+EP4 and TP4+EP4), the KV price of
+redundancy is now a *computable constant* per model - which is what lets
+the clamp refuse a bad config before it ships. Per-slot pain scales with
+model size: 0.2% of pool per slot at 30B, 4% at 235B - the bigger the
+model, the more the balancer's memory appetite matters.
+
+Ops appendix (each cost us a debugging round today):
+
+- **InferencePool selectors pin fleets.** `qwen-pool` matched
+  `llm-d.ai/model: qwen3-30b-a3b`; the 235B pods were invisible to EPP
+  ("no pods available in datastore" -> gateway 500/503 on everything).
+  Fleet swaps must update the pool selector or drop model labels from it.
+- **EPP only datastores READY pods** - a gateway check 20s after EPP
+  restart, mid-boot of a 20-minute model load, correctly fails. Order:
+  fleet ready first, then verify the gateway.
+- **The cluster reaper scales idle GPU pods to zero** (it did, during a
+  token-expiry gap) and node taints move (disk-pressure took out the
+  original target node). Rig scripts must re-verify placement on resume.
+- The A/B driver hardcoded the served model name; the 235B server 404'd
+  every request. Now auto-discovered from `/v1/models` (`--model` to
+  override).
