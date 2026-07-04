@@ -207,6 +207,7 @@ class Pipeline:
         replicas: int,
         requested_slots: int,
         safety: float = 1.1,
+        slot_cost: int | None = None,
     ) -> dict:
         """Clamp redundant-expert slots so the pool never crosses the working set.
 
@@ -223,17 +224,23 @@ class Pipeline:
             requested_slots: redundant slots the balancer wants.
             safety: usable-pool margin (nominal pool overstates capacity by
                 ~5-8%: block quantization, active decodes, watermark).
+            slot_cost: KV tokens per redundant slot for this model/topology
+                (default: the measured Qwen3-30B constant; scale by
+                expert_bytes / kv_bytes_per_token_per_gpu for others).
 
         Returns:
             Verdict dict with granted slots and the predicted regime.
         """
-        cost = cls.KV_TOKENS_PER_REDUNDANT_SLOT_PER_RANK
+        cost = slot_cost or cls.KV_TOKENS_PER_REDUNDANT_SLOT_PER_RANK
         share = tenants * prefix_tokens / replicas
         max_safe = max(0, int((pool_tokens - safety * share) // cost))
         granted = min(requested_slots, max_safe)
 
         def regime(slots: int) -> str:
-            fill = share / (pool_tokens - slots * cost)
+            left = pool_tokens - slots * cost
+            if left <= 0:
+                return "invalid (slots exceed the entire pool)"
+            fill = share / left
             if fill < 0.90:
                 return f"fits (fill {fill:.0%})"
             if fill <= 1.0:
@@ -351,6 +358,7 @@ def main() -> None:
     clamp.add_argument("--prefix-tokens", type=int)
     clamp.add_argument("--replicas", type=int, default=2)
     clamp.add_argument("--redundant-slots", type=int, help="slots the balancer wants")
+    clamp.add_argument("--slot-cost", type=int, help="KV tokens per slot (per model)")
     args = parser.parse_args()
 
     if args.pool_tokens is not None:
@@ -360,6 +368,7 @@ def main() -> None:
             args.prefix_tokens,
             args.replicas,
             args.redundant_slots,
+            slot_cost=args.slot_cost,
         )
         print(json.dumps(verdict, indent=2))
         return
