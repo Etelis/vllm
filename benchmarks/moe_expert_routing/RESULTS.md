@@ -629,3 +629,58 @@ KV pool the router's cache win depends on; and this experiment shows the
 spend destroying the win, live. Joint control of the two - the pipeline's
 recommendation output - is not an optimization nicety; the dose-response
 says the interaction term is first-order.
+
+## From findings to controls: the clamp, and a negative result on locality
+
+The keystone dictates one algorithm change and invited a second. We built
+the first and killed the second with data before building it.
+
+### The KV budget clamp (implemented: `pipeline.py kv_budget_clamp`)
+
+Redundancy becomes a budgeted purchase instead of a static config:
+`granted = min(requested, (pool - 1.1 x working_set/replicas) / 4712)`.
+Replayed against the measured dose-response it makes the right call at
+every point: at the keystone workload it refuses all 32 slots (predicting
+"overflow -> collapse" at requested - we measured 42.3% hits - and "edge"
+at granted=0 - we measured 68.6%); at 900 tenants it grants 32 with
+headroom for 102. The missing signal (working set) is exactly what the
+llm-d prefix scorer already tracks; the clamp is the ~20-line coupling
+between the two layers. Live validation on a second model: pending
+(Qwen3-235B-A22B-FP8 rig).
+
+### Origin-aware placement: offline negative result
+
+The proposal: in DP+EP, keep per-rank load matrices instead of all-reduced
+sums, and place experts near the ranks whose tokens use them (the router's
+affinity creates exactly that structure). Tested offline on the measured
+per-domain loads with vLLM's real placement policy (2 origin groups,
+EP4/EP8, locality-greedy with a 10% balance cap):
+
+| EP | placement | on-rank dispatch | balancedness | all-to-all cut |
+| --- | --- | --- | --- | --- |
+| 4 | stock (balance-only) | 0.259 | 1.000 | - |
+| 4 | origin-aware, capped | 0.336 | 0.861 | 10.4% |
+| 4 | locality ceiling | 0.375 | 0.458 | 15.7% |
+| 8 | origin-aware, capped | 0.168 | 0.854 | 4.1% |
+
+Verdict: not worth engine changes on this model family. The ceiling is set
+by **bulk expert-usage overlap: 0.84** between domains - Figure-1's
+divergence (JS 0.319, ~13% shared top-8) describes the head of the
+distribution, but 84% of token volume flows to experts both domains use.
+Locality can only capture the exclusive tail, diluted by ranks-per-group,
+and pays for it in balance (stock is already at 1.000). A ~10% all-to-all
+cut in a regime where all-to-all is 20-40% of step time is a low
+single-digit end-to-end gain at a 14pp balance cost.
+
+Falsifiable follow-up, not assumed: fine-grained-expert models
+(DeepSeek-V3: 256 experts, Qwen3-Next: 512) train narrower experts and
+should show lower bulk overlap; measure overlap there before revisiting.
+
+### DeepSeek-V3 slot economics (arithmetic, not measured)
+
+For scale: a DeepSeek-V3 redundant slot is 44 MB x 58 MoE layers = 2.55 GB
+FP8. Under MLA the KV cache is only ~70 KB/token, so one slot displaces
+~36,000 tokens of the hosting rank's pool - the reference config (32
+redundant slots at EP16, 2/rank) spends roughly 18% of each rank's KV pool
+on redundancy. The clamp question is not academic at DeepSeek scale; it is
+the first thing to check.

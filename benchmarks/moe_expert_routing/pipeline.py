@@ -197,6 +197,60 @@ class Pipeline:
     # KV pool 514,192 / 495,344 / 476,496 tokens per rank - exactly linear).
     KV_TOKENS_PER_REDUNDANT_SLOT_PER_RANK = 4712
 
+    # -- stage 5b: KV budget clamp ---------------------------------------------
+    @classmethod
+    def kv_budget_clamp(
+        cls,
+        pool_tokens: int,
+        tenants: int,
+        prefix_tokens: int,
+        replicas: int,
+        requested_slots: int,
+        safety: float = 1.1,
+    ) -> dict:
+        """Clamp redundant-expert slots so the pool never crosses the working set.
+
+        Measured dose-response (Qwen3-30B, 2x TP4+EP4, fixed workload): fill
+        95% -> 68.6% hits / 4646 tok/s; 102% -> 42.3% / 3413; 110% -> 4.5% /
+        2523. The cache side is a cliff, the balance side a 1-4% slope, so
+        the rule is a hard constraint: pool - slots*cost >= safety * share.
+
+        Args:
+            pool_tokens: per-replica KV pool at zero redundant slots.
+            tenants: distinct cached prefixes across the fleet.
+            prefix_tokens: tokens per cached prefix.
+            replicas: replicas the router partitions tenants across.
+            requested_slots: redundant slots the balancer wants.
+            safety: usable-pool margin (nominal pool overstates capacity by
+                ~5-8%: block quantization, active decodes, watermark).
+
+        Returns:
+            Verdict dict with granted slots and the predicted regime.
+        """
+        cost = cls.KV_TOKENS_PER_REDUNDANT_SLOT_PER_RANK
+        share = tenants * prefix_tokens / replicas
+        max_safe = max(0, int((pool_tokens - safety * share) // cost))
+        granted = min(requested_slots, max_safe)
+
+        def regime(slots: int) -> str:
+            fill = share / (pool_tokens - slots * cost)
+            if fill < 0.90:
+                return f"fits (fill {fill:.0%})"
+            if fill <= 1.0:
+                return f"edge (fill {fill:.0%}; expect partial eviction)"
+            return f"overflow (fill {fill:.0%}; expect cache collapse)"
+
+        return {
+            "share_per_replica": int(share),
+            "slot_cost_tokens": cost,
+            "max_safe_slots": max_safe,
+            "requested_slots": requested_slots,
+            "granted_slots": granted,
+            "clamped": granted < requested_slots,
+            "regime_at_requested": regime(requested_slots),
+            "regime_at_granted": regime(granted),
+        }
+
     # -- stage 6: recommendation ----------------------------------------------
     def recommend(self, ep: int, fabric: str, target: float) -> dict:
         table = self.placement_table((ep,))
@@ -285,15 +339,32 @@ class Pipeline:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--capture", required=True, help="dir with hist.npy+table.jsonl"
-    )
+    parser.add_argument("--capture", help="dir with hist.npy+table.jsonl")
     parser.add_argument("--repo", default=os.environ.get("VLLM_REPO", "."))
     parser.add_argument("--ep", type=int, default=8)
     parser.add_argument("--fabric", choices=("nvlink", "tcp", "rdma"), default="nvlink")
     parser.add_argument("--balance-target", type=float, default=0.95)
     parser.add_argument("--out", default="./pipeline_report")
+    clamp = parser.add_argument_group("kv budget clamp (no capture needed)")
+    clamp.add_argument("--pool-tokens", type=int, help="per-replica pool at 0 slots")
+    clamp.add_argument("--tenants", type=int)
+    clamp.add_argument("--prefix-tokens", type=int)
+    clamp.add_argument("--replicas", type=int, default=2)
+    clamp.add_argument("--redundant-slots", type=int, help="slots the balancer wants")
     args = parser.parse_args()
+
+    if args.pool_tokens is not None:
+        verdict = Pipeline.kv_budget_clamp(
+            args.pool_tokens,
+            args.tenants,
+            args.prefix_tokens,
+            args.replicas,
+            args.redundant_slots,
+        )
+        print(json.dumps(verdict, indent=2))
+        return
+    if not args.capture:
+        parser.error("--capture required unless running the clamp (--pool-tokens)")
 
     pipe = Pipeline(args.capture, args.repo)
     report = pipe.run(args.ep, args.fabric, args.balance_target, args.out)
