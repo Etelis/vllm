@@ -573,3 +573,59 @@ duplication factor, not a hard wall. The advantage peaks mid-window (+77%)
 exactly where the arithmetic says partitioning matters most. This is the
 pipeline's core claim demonstrated end-to-end: the regime is computable
 from working-set and pool sizes before you deploy anything.
+
+## Keystone: the EPLB-to-cache coupling, measured live
+
+Everything above establishes the links separately: the router manufactures
+expert divergence (Fig-1), EPLB redundancy costs KV (4,712 tokens/slot),
+KV pressure costs goodput (~1:1), and the cache term dominates when the
+multi-tenant window is open (+77%). Honest gap, raised as a direct
+challenge: no single experiment had shown an *EPLB decision* changing a
+*router cache outcome*. The +77% result involved no EPLB at all.
+
+This experiment closes the loop with one knob. Fleet: 2x TP4+EP4 replicas
+(Qwen3-30B-A3B, stock vLLM v0.23.0, one 2.28M-token KV pool per replica),
+llm-d prefix-affinity routing, fixed workload of 1,194 tenants x 3.6K-token
+prefixes (per-replica share 2.167M tokens, chosen at the midpoint of the
+82K-token band that fits at red=0 and overflows at red=32). The only
+variable across arms: `num_redundant_experts` in `--eplb-config`. Each arm
+cold-starts (clean pod replace), runs a warm-up pass then a measured pass.
+
+| redundant slots | pool/replica | WS fill | hit rate | goodput | p50 |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 2,279,808 | 95% | **68.6%** | 4,646 tok/s | 0.96 s |
+| 32 | 2,129,024 | 102% | **42.3%** | 3,413 tok/s | 1.89 s |
+| 64 | 1,978,240 | 110% | **4.5%** | 2,523 tok/s | 2.39 s |
+
+The EPLB knob alone moves the router's cache outcome by -64pp hits, -46%
+goodput, 2.5x p50 - a monotone dose-response tracking the pool arithmetic
+exactly. At red=64 the measured pass (4.5%) is statistically the cold pass
+(3.4%): the prefix cache retains nothing.
+
+Supporting evidence that makes it airtight:
+
+- **Slot cost is topology-invariant.** Pool shrink = 4,712 KV tokens/slot,
+  exact at 0/16/32 slots on DP4+EP4 and 0/32/64 on TP4+EP4; the red=64
+  pool was predicted (2,279,808 - 64x4,712 = 1,978,240) and measured at
+  precisely that value.
+- **Not a routing artifact.** Per-replica metrics deltas show near-50/50
+  query splits and lockstep hit rates (66.6%/70.7% at red=0, 42.0%/42.7%
+  at red=32): uniform pool pressure, not one replica thrashing.
+- **Usable pool < nominal pool.** The red=0 control lands at 68.6% (not
+  ~99%) because 95% nominal fill already evicts: block quantization,
+  active-decode blocks, and the eviction watermark shave ~5-8% off the
+  advertised pool. Capacity planning against nominal pool sizes
+  overcommits; the pipeline uses a 0.9 safety factor.
+
+Scope notes: hit-frac is the lead metric (pure cache arithmetic, immune to
+node placement); nodes pokprod-b93r38s0/b93r44s3 held fixed across arms;
+the stock image lacks `--enable-return-routed-experts`, so the driver's
+per-request `ok` flag reads false while token/latency/cache fields remain
+valid (metrics computed from response rows).
+
+The chain is now closed end-to-end: the router's affinity creates the
+imbalance EPLB reacts to; EPLB's fix (redundant experts) spends the very
+KV pool the router's cache win depends on; and this experiment shows the
+spend destroying the win, live. Joint control of the two - the pipeline's
+recommendation output - is not an optimization nicety; the dose-response
+says the interaction term is first-order.

@@ -320,6 +320,7 @@ def build_tenants_domain(
     """
     import random as _random
 
+    num_tenants = int(os.environ.get("MOE_NUM_TENANTS", num_tenants))
     train = list(_read_jsonl(_download_and_cache(GSM8K_TRAIN_URL, cache_dir)))
     test = list(_read_jsonl(_download_and_cache(GSM8K_TEST_URL, cache_dir)))
     rng = _random.Random(1234)

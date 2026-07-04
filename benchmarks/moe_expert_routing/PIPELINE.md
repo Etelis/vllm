@@ -24,7 +24,7 @@ python -m benchmarks.moe_expert_routing.pipeline \
 
 ## The headline findings it encodes
 
-0. **The cache term dominates when active.** With 96 tenants x 3.6K-token
+1. **The cache term dominates when active.** With 96 tenants x 3.6K-token
    prefixes against 118K-token replica pools (working set > one pool, fits
    the fleet), prefix-affinity vs load-only routing = 98.5% vs 27.8% hits =
    **+77% goodput, p50 -48%** (measured, cold-start protocol both arms).
@@ -32,18 +32,26 @@ python -m benchmarks.moe_expert_routing.pipeline \
    per-replica pool - a pool that expert redundancy shrinks by a measured
    4,712 tokens/slot.
 
-1. **The router decides who is hot.** llm-d's default prefix-affinity scorer
+2. **EPLB redundancy is a cache-window knob (the coupling, live).** Same
+   fleet, same routing, same 1,194-tenant workload; flipping only
+   `num_redundant_experts` 0 -> 32 -> 64 shrank pools by an exact 4,712
+   tokens/slot (topology-invariant: DP4+EP4 and TP4+EP4) and moved the
+   router's cache outcome 68.6% -> 42.3% -> 4.5% hits (-46% goodput,
+   2.5x p50). The EPLB decision and the router's cache win are one
+   budget; the pipeline prices them jointly.
+
+3. **The router decides who is hot.** llm-d's default prefix-affinity scorer
    turns interchangeable replicas into expert-divergent silos (math/code
    share ~13% of hot experts). High-purity effect: 80% affinity yields only
    ~30% of the divergence.
-2. **Placement fit is regime-dependent.** ~1% on NVLink EP4; ~4% measured
+4. **Placement fit is regime-dependent.** ~1% on NVLink EP4; ~4% measured
    at network-bound cross-node EP8 (same-pod protocol); headroom grows with
    EP width (34pp balancedness at EP8, model-calibrated).
-3. **Purity is not free.** At EP16 the hot expert of a pure workload exceeds
+5. **Purity is not free.** At EP16 the hot expert of a pure workload exceeds
    rank capacity: 16 redundant slots required vs 0 for mixed traffic - a
    measured ~4,712 KV tokens/rank per slot. The router's affinity weight is
    therefore a *memory* knob, not just a latency knob.
-4. **EPLB should be triggered, not periodic.** Async rearrangement costs
+6. **EPLB should be triggered, not periodic.** Async rearrangement costs
    ~0.1%; the balancedness-threshold auto-trigger (implemented on this
    branch, upstream TODO of the original EPLB PR) captures placement value
    without cadence tuning; an external trigger RPC lets routers/orchestrators
