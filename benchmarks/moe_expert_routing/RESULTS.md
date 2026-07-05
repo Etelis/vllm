@@ -778,3 +778,23 @@ kernels - no flashinfer JIT, single-node, no cross-node DP.
 - Serving DeepSeek AWQ checkpoints at all requires
   `--quantization moe_wna16` (stock `awq_marlin` rejects the checkpoint's
   mixed-quantization layer map with a `ValueError` in `is_layer_skipped`).
+
+### V3 FP8 pursuit: final status (9 attempts, hard stop)
+
+With real toolkit headers (`apt cuda-nvrtc-dev-13-0`) the flashinfer
+TRT-LLM fp8-blockscale JIT compiles and links - and its kernel then faults
+at runtime (illegal access surfacing in `fused_add_rms_norm`) on every
+rank, identically. The blocker is the kernel/environment combination
+(branch-built vLLM + CUDA-13 torch + flashinfer wheel on H100), not
+deployment configuration. Remedies, in order of preference: (a) serving
+image built on a devel base with the matching flashinfer/vLLM pin, (b) a
+vLLM build where the blockscale path can be steered to CUTLASS/Triton
+end-to-end, (c) upstream flashinfer fix. All are image-build tasks, not
+boot-time patches.
+
+The V3 pursuit still banked: pool 148,000 tokens/replica measured under
+MLA at TP8+DP2+EP16; EPLB confirmed initializing on DeepSeek-V3 (Gloo
+staged communicator); slot-cost pre-registration (36,330 tokens/slot-per-
+GPU => DeepSeek's own reference convention costs 49% of the pool); the
+EPLB-unsupported-on-quantized-MoE finding; and a 9-step ops ladder future
+deployments can skip.
