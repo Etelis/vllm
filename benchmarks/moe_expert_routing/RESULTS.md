@@ -727,3 +727,41 @@ Ops appendix (each cost us a debugging round today):
 - The A/B driver hardcoded the served model name; the 235B server 404'd
   every request. Now auto-discovered from `/v1/models` (`--model` to
   override).
+
+## DeepSeek-V3 closed-loop attempt: ops trail (in progress)
+
+Goal: the closed loop (telemetry-driven redundancy decision vs DeepSeek's
+reference config) on DeepSeek-V3-0324 FP8, 2 nodes x 8 H100, TP8+DP2+EP16.
+Eight boot attempts over one night, each failing strictly deeper - recorded
+because the ladder itself is reusable ops knowledge:
+
+1. `--data-parallel-hybrid-lb` (per-node API servers): engine-ready
+   handshake never completes cross-node -> revert to the proven
+   headless-worker shape (single API on head).
+2. DeepGEMM JIT: `ninja: build stopped` during FP8 grouped-GEMM warmup ->
+   `VLLM_USE_DEEP_GEMM=0`.
+3. flashinfer/TRT-LLM fp8_blockscale JIT: `fatal error: nvrtc.h` - the
+   serving image ships CUDA 13 *runtime* libs but no dev headers.
+4. Pip-wheel workaround trap: `nvidia-cuda-nvrtc-cu13` on PyPI is a 0.0.1
+   stub; installing `-cu12` instead compiles the JIT against CUDA 12 on a
+   CUDA 13 torch -> runtime illegal access surfacing in fused_add_rms_norm.
+   The correct cu13 package is the *unified* name `nvidia-cuda-nvrtc==13.*`.
+5. Linker: wheels ship only versioned `libnvrtc.so.13` - `-lnvrtc` needs an
+   unversioned symlink.
+6. `--enforce-eager` bypasses a capture-time flashinfer workspace sizing
+   error (`Buffer 1146880, Required 3670016`).
+
+Terminal state: engine-ready timeout persists on the FP8-blockscale JIT
+path with the aligned toolchain; the clean fix is an image with the CUDA-13
+dev toolchain baked (devel base), not runtime patching.
+
+What the attempts DID establish on V3: EPLB initializes on DeepSeek-V3
+(`TorchDistGlooStagedEplbCommunicator`), weights load at 44.5 GiB/GPU FP8,
+and the **measured pool is 148,000 tokens/replica** under MLA - so the
+pre-registered slot cost (36,330 tokens per slot-per-GPU = 2.554 GB
+expert-set / 70.3 KB-per-token MLA cache) makes DeepSeek's own reference
+convention (2 slots/GPU at EP16) cost **49% of the KV pool**. The clamp
+question is sharpest exactly where EPLB was born.
+
+Next move (not a boot retry): W4A16-quantized V3 uses precompiled Marlin
+kernels - no flashinfer JIT, single-node, no cross-node DP.
