@@ -765,3 +765,16 @@ question is sharpest exactly where EPLB was born.
 
 Next move (not a boot retry): W4A16-quantized V3 uses precompiled Marlin
 kernels - no flashinfer JIT, single-node, no cross-node DP.
+
+### Two hard compatibility findings from the V3 pursuit
+
+- **EPLB does not support quantized MoE.** vLLM raises
+  `NotImplementedError: EPLB is not supported MoeWNA16Method`
+  (`fused_moe/layer.py`) - the AWQ/W4A16 single-node route to DeepSeek-V3
+  is closed by design, not by bug. Consequence worth stating on its own:
+  today's quantized MoE deployments cannot use expert rebalancing at all,
+  so the redundancy-vs-cache trade this study prices exists only for
+  BF16/FP8-native fleets.
+- Serving DeepSeek AWQ checkpoints at all requires
+  `--quantization moe_wna16` (stock `awq_marlin` rejects the checkpoint's
+  mixed-quantization layer map with a `ValueError` in `is_layer_skipped`).
