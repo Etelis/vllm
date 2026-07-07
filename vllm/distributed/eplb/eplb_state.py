@@ -769,8 +769,12 @@ class EplbState:
                 num_logical, dtype=phy_load.dtype, device=phy_load.device
             )
             log_load.scatter_add_(0, flat_map[valid], phy_load[valid])
+            # Physical slots are EP-rank-contiguous, so this vector folds onto
+            # ranks correctly regardless of the current logical placement.
+            phy_slot_load = model_state.expert_load_window.sum(dim=(0, 1))
             stats["models"][name] = {
                 "logical_expert_load_window_sum": log_load.cpu().tolist(),
+                "physical_expert_load_window_sum": phy_slot_load.cpu().tolist(),
                 "physical_to_logical_map": phy2log.cpu().tolist(),
             }
         return stats
