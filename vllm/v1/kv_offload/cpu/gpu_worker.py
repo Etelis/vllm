@@ -3,6 +3,7 @@
 import functools
 import time
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -118,6 +119,227 @@ def compute_sub_block_ptrs(
     # Flatten and apply skip_count / truncation
     flat = all_ptrs.ravel()
     output[:] = flat[skip_count : skip_count + num_sub_blocks]
+
+
+@dataclass
+class _SideFillTable:
+    """Init-time pointer table for one side (src or dst) of a group."""
+
+    # (num_refs, 1) uint64 tensor base pointers
+    bases_col: np.ndarray
+    row_stride: int
+    # (block_size_factor,) uint64 sub-block byte offsets, None if factor == 1
+    sub_offsets: np.ndarray | None
+
+
+@dataclass
+class _GroupFillTable:
+    # (num_refs, 1) int64 per-ref page sizes
+    page_sizes_col: np.ndarray
+    page_sizes_sum: int
+    src: _SideFillTable | None
+    dst: _SideFillTable | None
+
+
+def _side_fill_table(
+    tensors: list[torch.Tensor], block_size_factor: int
+) -> _SideFillTable | None:
+    """Build a group's pointer table, or None if its layout is non-uniform."""
+    if not tensors:
+        return None
+    row_strides = {t.stride(0) for t in tensors}
+    padded_page_sizes = {t.shape[1] for t in tensors}
+    if len(row_strides) > 1 or len(padded_page_sizes) > 1:
+        return None
+    padded_page_size = padded_page_sizes.pop()
+    if block_size_factor > 1 and padded_page_size % block_size_factor:
+        return None
+    bases = np.array([t.data_ptr() for t in tensors], dtype=np.uint64)
+    sub_offsets = None
+    if block_size_factor > 1:
+        sub_block_size = padded_page_size // block_size_factor
+        sub_offsets = np.arange(block_size_factor, dtype=np.uint64) * sub_block_size
+    return _SideFillTable(bases[:, np.newaxis], row_strides.pop(), sub_offsets)
+
+
+def _sub_block_offsets(
+    block_ids: np.ndarray, table: _SideFillTable, count: int, skip_count: int
+) -> np.ndarray:
+    """Byte offsets of count sub-blocks, shared by all refs of a group."""
+    if table.sub_offsets is None:
+        return block_ids.astype(np.uint64) * table.row_stride
+    offsets = (
+        block_ids.astype(np.uint64)[:, np.newaxis] * table.row_stride
+        + table.sub_offsets[np.newaxis, :]
+    ).ravel()
+    return offsets[skip_count : skip_count + count]
+
+
+class _DescriptorBuilder:
+    """Fills the (src ptr, dst ptr, size) descriptor arrays of a transfer.
+
+    Descriptors are ordered group-major, then data_ref, then block. Since
+    the refs of a group share row stride and padded page size on each side
+    (verified at init), each group is filled with a single
+    (num_refs, group_size) broadcast: base pointers vary per ref (rows),
+    sub-block offsets vary per block (columns). Groups with non-uniform
+    layouts fall back to a per-ref compute_sub_block_ptrs loop.
+    """
+
+    def __init__(
+        self,
+        src_tensors: list[torch.Tensor],
+        dst_tensors: list[torch.Tensor],
+        src_block_size_factor: int,
+        dst_block_size_factor: int,
+        kv_cache_groups_data_refs: list[list[CanonicalKVCacheRef]],
+    ):
+        self.src_tensors = src_tensors
+        self.dst_tensors = dst_tensors
+        self.src_block_size_factor = src_block_size_factor
+        self.dst_block_size_factor = dst_block_size_factor
+        self.kv_cache_groups_data_refs = kv_cache_groups_data_refs
+
+        self._group_tables: list[_GroupFillTable] = []
+        for refs in kv_cache_groups_data_refs:
+            page_sizes = np.array([r.page_size_bytes for r in refs], dtype=np.int64)
+            self._group_tables.append(
+                _GroupFillTable(
+                    page_sizes_col=page_sizes[:, np.newaxis],
+                    page_sizes_sum=int(page_sizes.sum()),
+                    src=_side_fill_table(
+                        [src_tensors[r.tensor_idx] for r in refs],
+                        src_block_size_factor,
+                    ),
+                    dst=_side_fill_table(
+                        [dst_tensors[r.tensor_idx] for r in refs],
+                        dst_block_size_factor,
+                    ),
+                )
+            )
+
+    def num_copy_ops(self, group_sizes: Sequence[int]) -> int:
+        return sum(
+            group_size * len(group_data_refs)
+            for group_size, group_data_refs in zip(
+                group_sizes, self.kv_cache_groups_data_refs
+            )
+        )
+
+    def fill(
+        self,
+        group_sizes: Sequence[int],
+        block_indices: Sequence[int],
+        src_blocks: np.ndarray,
+        dst_blocks: np.ndarray,
+        all_src: np.ndarray,
+        all_dst: np.ndarray,
+        all_sizes: np.ndarray,
+    ) -> int:
+        """Fill the descriptor arrays and return the total transfer bytes.
+
+        Transfers are block-aligned on the CPU side, EXCEPT MAYBE for the
+        first and last CPU block per group: when CPU blocks are larger than
+        GPU blocks, these can match a smaller (byte-wise) set of GPU blocks,
+        so some gpu-sized sub-blocks of the first CPU block must be skipped.
+        block_indices gives each group's logical offset inside the request
+        (in GPU blocks), from which that skip is derived.
+        """
+        num_src_blocks = len(src_blocks)
+        num_dst_blocks = len(dst_blocks)
+
+        src_offset = 0
+        dst_offset = 0
+        op_idx = 0
+        num_transfer_bytes = 0
+        for group_size, block_idx, group_data_refs, table in zip(
+            group_sizes,
+            block_indices,
+            self.kv_cache_groups_data_refs,
+            self._group_tables,
+        ):
+            if group_size == 0:
+                continue
+
+            src_logical_blocks_to_skip = block_idx % self.src_block_size_factor
+            dst_logical_blocks_to_skip = block_idx % self.dst_block_size_factor
+            src_logical_blocks_count = group_size + src_logical_blocks_to_skip
+            dst_logical_blocks_count = group_size + dst_logical_blocks_to_skip
+
+            dst_blocks_count = cdiv(
+                dst_logical_blocks_count, self.dst_block_size_factor
+            )
+            dst_end_offset = dst_offset + dst_blocks_count
+            assert dst_end_offset <= num_dst_blocks
+
+            src_blocks_count = cdiv(
+                src_logical_blocks_count, self.src_block_size_factor
+            )
+            src_end_offset = src_offset + src_blocks_count
+            assert src_end_offset <= num_src_blocks
+
+            group_src = src_blocks[src_offset:src_end_offset]
+            group_dst = dst_blocks[dst_offset:dst_end_offset]
+
+            if table.src is not None and table.dst is not None:
+                end_idx = op_idx + len(group_data_refs) * group_size
+                shape = (len(group_data_refs), group_size)
+                np.add(
+                    table.src.bases_col,
+                    _sub_block_offsets(
+                        group_src,
+                        table.src,
+                        group_size,
+                        src_logical_blocks_to_skip,
+                    ),
+                    out=all_src[op_idx:end_idx].reshape(shape),
+                    casting="unsafe",
+                )
+                np.add(
+                    table.dst.bases_col,
+                    _sub_block_offsets(
+                        group_dst,
+                        table.dst,
+                        group_size,
+                        dst_logical_blocks_to_skip,
+                    ),
+                    out=all_dst[op_idx:end_idx].reshape(shape),
+                    casting="unsafe",
+                )
+                all_sizes[op_idx:end_idx].reshape(shape)[:] = table.page_sizes_col
+                num_transfer_bytes += group_size * table.page_sizes_sum
+                op_idx = end_idx
+            else:
+                for data_ref in group_data_refs:
+                    t_idx = data_ref.tensor_idx
+                    end_idx = op_idx + group_size
+
+                    compute_sub_block_ptrs(
+                        group_src,
+                        self.src_block_size_factor,
+                        all_src[op_idx:end_idx],
+                        self.src_tensors[t_idx],
+                        skip_count=src_logical_blocks_to_skip,
+                    )
+                    compute_sub_block_ptrs(
+                        group_dst,
+                        self.dst_block_size_factor,
+                        all_dst[op_idx:end_idx],
+                        self.dst_tensors[t_idx],
+                        skip_count=dst_logical_blocks_to_skip,
+                    )
+
+                    all_sizes[op_idx:end_idx] = data_ref.page_size_bytes
+                    num_transfer_bytes += group_size * data_ref.page_size_bytes
+                    op_idx = end_idx
+
+            src_offset = src_end_offset
+            dst_offset = dst_end_offset
+
+        assert src_offset == num_src_blocks
+        assert dst_offset == num_dst_blocks
+        assert op_idx == len(all_src)
+        return num_transfer_bytes
 
 
 def merge_contiguous_descriptors(
@@ -270,6 +492,14 @@ class SingleDirectionOffloadingHandler:
         self.src_block_size_factor = 1 if self.gpu_to_cpu else block_size_factor
         self.dst_block_size_factor = block_size_factor if self.gpu_to_cpu else 1
 
+        self._descriptor_builder = _DescriptorBuilder(
+            src_tensors=self.src_tensors,
+            dst_tensors=self.dst_tensors,
+            src_block_size_factor=self.src_block_size_factor,
+            dst_block_size_factor=self.dst_block_size_factor,
+            kv_cache_groups_data_refs=kv_cache_groups_data_refs,
+        )
+
         # mmap_region to clean up on shutdown (gpu_to_cpu handler owns it)
         self._mmap_region = mmap_region
         # job_id -> event
@@ -294,43 +524,20 @@ class SingleDirectionOffloadingHandler:
         assert src_blocks.ndim == 1
         assert dst_blocks.ndim == 1
 
-        num_src_blocks = len(src_blocks)
-        num_dst_blocks = len(dst_blocks)
-
-        # There are 2 types of transfers:
-        # 1. GPU -> CPU
-        # 2. CPU -> GPU
-        #
-        # transfers are also to CPU blocks, EXCEPT MAYBE for the first and last block.
-        # i.e. the first and last CPU blocks in src_blocks can match against
-        # a smaller (byte-wise) set of GPU blocks in dst_blocks.
-        # In such cases, we may need to skip some gpu-sized sub-blocks,
-        # and start reading/writing from the middle of the first CPU block.
-        # If we have multiple KV cache groups (when using HMA with hybrid models),
-        # we may have a partial first/last CPU block per each group.
-        # The group_sizes parameter encodes the size of each group of blocks
-        # in the GPU dst_blocks.
-        # If group_sizes is None, we assume all blocks belong to a single group.
-        # The logical_offset parameter maps each group of blocks to its logical
-        # offset inside the request, counting in GPU blocks.
-        # This allows us to find the correct starting position
-        # in the matching first CPU block.
-
-        # extract group_sizes from the GPU spec
+        # extract group_sizes and block indices from the GPU spec.
+        # group_sizes encodes the number of GPU blocks per KV cache group
+        # (multiple groups when using HMA with hybrid models), and
+        # block_indices each group's logical offset inside the request,
+        # counting in GPU blocks.
         gpu_spec = src_spec if self.gpu_to_cpu else dst_spec
         assert isinstance(gpu_spec, GPULoadStoreSpec)
         group_sizes = gpu_spec.group_sizes
         assert len(group_sizes) == len(self.kv_cache_groups_data_refs)
 
-        # extract block indices from the GPU spec
         block_indices = gpu_spec.block_indices
         assert len(block_indices) == len(self.kv_cache_groups_data_refs)
 
-        num_copy_ops = 0
-        for group_size, group_data_refs in zip(
-            group_sizes, self.kv_cache_groups_data_refs
-        ):
-            num_copy_ops += group_size * len(group_data_refs)
+        num_copy_ops = self._descriptor_builder.num_copy_ops(group_sizes)
 
         # reuse a pooled buffer set, growing it if this transfer needs more room
         batch_src, batch_dst, batch_sizes = (
@@ -348,66 +555,15 @@ class SingleDirectionOffloadingHandler:
         all_dst = dst.numpy()
         all_sizes = sizes.numpy()
 
-        src_offset = 0
-        dst_offset = 0
-        op_idx = 0
-        # count total number of bytes copied
-        num_transfer_bytes = 0
-        for group_size, block_idx, group_data_refs in zip(
-            group_sizes, block_indices, self.kv_cache_groups_data_refs
-        ):
-            if group_size == 0:
-                continue
-
-            src_logical_blocks_to_skip = block_idx % self.src_block_size_factor
-            dst_logical_blocks_to_skip = block_idx % self.dst_block_size_factor
-            src_logical_blocks_count = group_size + src_logical_blocks_to_skip
-            dst_logical_blocks_count = group_size + dst_logical_blocks_to_skip
-
-            dst_blocks_count = cdiv(
-                dst_logical_blocks_count, self.dst_block_size_factor
-            )
-            dst_end_offset = dst_offset + dst_blocks_count
-            assert dst_end_offset <= num_dst_blocks
-
-            src_blocks_count = cdiv(
-                src_logical_blocks_count, self.src_block_size_factor
-            )
-            src_end_offset = src_offset + src_blocks_count
-            assert src_end_offset <= num_src_blocks
-
-            group_src = src_blocks[src_offset:src_end_offset]
-            group_dst = dst_blocks[dst_offset:dst_end_offset]
-
-            for data_ref in group_data_refs:
-                t_idx = data_ref.tensor_idx
-                end_idx = op_idx + group_size
-
-                compute_sub_block_ptrs(
-                    group_src,
-                    self.src_block_size_factor,
-                    all_src[op_idx:end_idx],
-                    self.src_tensors[t_idx],
-                    skip_count=src_logical_blocks_to_skip,
-                )
-                compute_sub_block_ptrs(
-                    group_dst,
-                    self.dst_block_size_factor,
-                    all_dst[op_idx:end_idx],
-                    self.dst_tensors[t_idx],
-                    skip_count=dst_logical_blocks_to_skip,
-                )
-
-                all_sizes[op_idx:end_idx] = data_ref.page_size_bytes
-                num_transfer_bytes += group_size * data_ref.page_size_bytes
-                op_idx = end_idx
-
-            src_offset = src_end_offset
-            dst_offset = dst_end_offset
-
-        assert src_offset == num_src_blocks
-        assert dst_offset == num_dst_blocks
-        assert op_idx == num_copy_ops
+        num_transfer_bytes = self._descriptor_builder.fill(
+            group_sizes,
+            block_indices,
+            src_blocks,
+            dst_blocks,
+            all_src,
+            all_dst,
+            all_sizes,
+        )
 
         if self._merge_descriptors and num_copy_ops > 1:
             num_copy_ops = merge_contiguous_descriptors(all_src, all_dst, all_sizes)

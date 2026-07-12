@@ -4,11 +4,12 @@ import random
 import time
 import uuid
 
+import numpy as np
 import pytest
 import torch
 
 from vllm.platforms import current_platform
-from vllm.utils.math_utils import round_up
+from vllm.utils.math_utils import cdiv, round_up
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.kv_offload.base import (
     CanonicalKVCacheRef,
@@ -17,7 +18,7 @@ from vllm.v1.kv_offload.base import (
     GPULoadStoreSpec,
 )
 from vllm.v1.kv_offload.cpu.common import CPULoadStoreSpec
-from vllm.v1.kv_offload.cpu.gpu_worker import CPUOffloadingWorker
+from vllm.v1.kv_offload.cpu.gpu_worker import CPUOffloadingWorker, _DescriptorBuilder
 from vllm.v1.kv_offload.cpu.shared_offload_region import SharedOffloadRegion
 
 NUM_GPU_BLOCKS = [64]
@@ -419,3 +420,159 @@ def test_transfer_multi_group(
                 )
 
     worker.shutdown()
+
+
+def _naive_descriptor_fill(
+    group_sizes,
+    block_indices,
+    src_blocks,
+    dst_blocks,
+    groups_refs,
+    src_tensors,
+    dst_tensors,
+    src_factor,
+    dst_factor,
+):
+    """Reference fill: one pure-python iteration per copy op."""
+
+    def sub_block_ptr(tensor, blocks, factor, logical_idx):
+        block_id = int(blocks[logical_idx // factor])
+        sub_idx = logical_idx % factor
+        sub_size = tensor.shape[1] // factor
+        return tensor.data_ptr() + block_id * tensor.stride(0) + sub_idx * sub_size
+
+    src_ptrs: list[int] = []
+    dst_ptrs: list[int] = []
+    sizes: list[int] = []
+    src_off = 0
+    dst_off = 0
+    total_bytes = 0
+    for group_size, block_idx, refs in zip(group_sizes, block_indices, groups_refs):
+        if group_size == 0:
+            continue
+        src_skip = block_idx % src_factor
+        dst_skip = block_idx % dst_factor
+        src_cnt = cdiv(group_size + src_skip, src_factor)
+        dst_cnt = cdiv(group_size + dst_skip, dst_factor)
+        group_src = src_blocks[src_off : src_off + src_cnt]
+        group_dst = dst_blocks[dst_off : dst_off + dst_cnt]
+        for ref in refs:
+            for i in range(group_size):
+                src_ptrs.append(
+                    sub_block_ptr(
+                        src_tensors[ref.tensor_idx], group_src, src_factor, src_skip + i
+                    )
+                )
+                dst_ptrs.append(
+                    sub_block_ptr(
+                        dst_tensors[ref.tensor_idx], group_dst, dst_factor, dst_skip + i
+                    )
+                )
+                sizes.append(ref.page_size_bytes)
+                total_bytes += ref.page_size_bytes
+        src_off += src_cnt
+        dst_off += dst_cnt
+    return src_ptrs, dst_ptrs, sizes, total_bytes
+
+
+@pytest.mark.parametrize("gpu_to_cpu", [True, False])
+@pytest.mark.parametrize("block_size_factor", [1, 3])
+@pytest.mark.parametrize("uniform_layout", [True, False])
+def test_descriptor_builder_matches_naive_reference(
+    gpu_to_cpu: bool, block_size_factor: int, uniform_layout: bool
+) -> None:
+    """The vectorized descriptor fill must match a per-sub-block reference
+    loop, including partial first CPU blocks (skip), zero-size groups,
+    non-contiguous CPU tensors, tensors shared between refs, and the
+    non-uniform-layout fallback (uniform_layout=False)."""
+    rng = random.Random(0)
+    gpu_page = 32 * block_size_factor
+    cpu_page = gpu_page * block_size_factor
+
+    group_sizes = [5, 0, 9]
+    block_indices = [4, 0, 5]
+    refs_per_group = [3, 2, 4]
+
+    gpu_tensors: list[torch.Tensor] = []
+    cpu_tensors: list[torch.Tensor] = []
+    groups_refs: list[list[CanonicalKVCacheRef]] = []
+    for num_refs in refs_per_group:
+        refs: list[CanonicalKVCacheRef] = []
+        for j in range(num_refs):
+            if j == 1 and len(groups_refs) == 2:
+                # two refs sharing one tensor, with a smaller unpadded page
+                refs.append(
+                    CanonicalKVCacheRef(
+                        tensor_idx=refs[0].tensor_idx,
+                        page_size_bytes=gpu_page - 16,
+                    )
+                )
+                continue
+            pad = 96 if not uniform_layout and not groups_refs and j == 0 else 32
+            gpu_tensors.append(torch.zeros((64, gpu_page), dtype=torch.int8))
+            cpu_tensors.append(
+                torch.zeros((32, cpu_page + pad), dtype=torch.int8)[:, :cpu_page]
+            )
+            refs.append(
+                CanonicalKVCacheRef(
+                    tensor_idx=len(gpu_tensors) - 1, page_size_bytes=gpu_page
+                )
+            )
+        groups_refs.append(refs)
+
+    src_factor = 1 if gpu_to_cpu else block_size_factor
+    dst_factor = block_size_factor if gpu_to_cpu else 1
+    src_tensors = gpu_tensors if gpu_to_cpu else cpu_tensors
+    dst_tensors = cpu_tensors if gpu_to_cpu else gpu_tensors
+
+    src_blocks_list: list[int] = []
+    dst_blocks_list: list[int] = []
+    for group_size, block_idx in zip(group_sizes, block_indices):
+        if group_size == 0:
+            continue
+        src_cnt = cdiv(group_size + block_idx % src_factor, src_factor)
+        dst_cnt = cdiv(group_size + block_idx % dst_factor, dst_factor)
+        src_blocks_list += [rng.randrange(24) for _ in range(src_cnt)]
+        dst_blocks_list += [rng.randrange(24) for _ in range(dst_cnt)]
+    src_blocks = np.array(src_blocks_list, dtype=np.int64)
+    dst_blocks = np.array(dst_blocks_list, dtype=np.int64)
+
+    builder = _DescriptorBuilder(
+        src_tensors=src_tensors,
+        dst_tensors=dst_tensors,
+        src_block_size_factor=src_factor,
+        dst_block_size_factor=dst_factor,
+        kv_cache_groups_data_refs=groups_refs,
+    )
+    ref_src, ref_dst, ref_sizes, ref_bytes = _naive_descriptor_fill(
+        group_sizes,
+        block_indices,
+        src_blocks,
+        dst_blocks,
+        groups_refs,
+        src_tensors,
+        dst_tensors,
+        src_factor,
+        dst_factor,
+    )
+
+    num_copy_ops = builder.num_copy_ops(group_sizes)
+    assert num_copy_ops == len(ref_sizes)
+
+    all_src = torch.empty(num_copy_ops, dtype=torch.int64).numpy()
+    all_dst = torch.empty(num_copy_ops, dtype=torch.int64).numpy()
+    all_sizes = torch.empty(num_copy_ops, dtype=torch.int64).numpy()
+    num_bytes = builder.fill(
+        group_sizes,
+        block_indices,
+        src_blocks,
+        dst_blocks,
+        all_src,
+        all_dst,
+        all_sizes,
+    )
+
+    assert num_bytes == ref_bytes
+    assert all_src.tolist() == ref_src
+    assert all_dst.tolist() == ref_dst
+    assert all_sizes.tolist() == ref_sizes
