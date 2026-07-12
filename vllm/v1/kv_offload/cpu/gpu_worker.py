@@ -32,11 +32,13 @@ from vllm.v1.kv_offload.cpu.swap_blocks_triton import (
 
 logger = init_logger(__name__)
 
-# GPU->CPU DMA stores are split into sub-batches submitted back-to-back on the
-# same stream, so the driver's descriptor command generation overlaps
-# copy-engine execution (H100 D2H: 1.2-1.8x for 8-128 KiB pages at n >= 1K).
-# CPU->GPU loads use ORDER_ANY source access, where a single call is fastest.
-DMA_STORE_CHUNK = 512
+# DMA batches are split into sub-batches submitted back-to-back on the same
+# stream, so the driver's descriptor command generation overlaps copy-engine
+# execution (H100, driver 580.105 / CUDA 13: D2H stores 1.2-1.8x for 8-128 KiB
+# pages at n >= 1K; H2D loads 1.1-1.8x for >= 28 KiB pages at n >= 1K, where
+# sub-batches must use STREAM source order - ANY-order chunks regress ~0.7x).
+# Jobs of <= DMA_CHUNK descriptors keep one call (loads: ORDER_ANY, fastest).
+DMA_CHUNK = 512
 
 
 def _select_swap_blocks_fn(
@@ -492,9 +494,8 @@ class SingleDirectionOffloadingHandler:
         # with descriptor count. The Triton kernel parallelizes across
         # descriptors, so merging could shrink its grid below NUM_SMS.
         self._merge_descriptors = self._swap_blocks_batch is ops.swap_blocks_batch
-        self._chunk_dma_stores = (
-            gpu_to_cpu
-            and self._swap_blocks_batch is ops.swap_blocks_batch
+        self._chunk_dma_batches = (
+            self._swap_blocks_batch is ops.swap_blocks_batch
             and current_platform.is_cuda()
         )
 
@@ -613,9 +614,12 @@ class SingleDirectionOffloadingHandler:
         is_src_access_order_any = not self.gpu_to_cpu
         with current_platform.stream(stream):
             start_event.record(stream)
-            if self._chunk_dma_stores and num_copy_ops > DMA_STORE_CHUNK:
-                for off in range(0, num_copy_ops, DMA_STORE_CHUNK):
-                    end = off + DMA_STORE_CHUNK
+            if self._chunk_dma_batches and num_copy_ops > DMA_CHUNK:
+                # STREAM order for chunked loads too: it is strictly stronger
+                # ordering than ANY, and ANY-order chunks do not pipeline.
+                is_src_access_order_any = False
+                for off in range(0, num_copy_ops, DMA_CHUNK):
+                    end = off + DMA_CHUNK
                     self._swap_blocks_batch(
                         src[off:end],
                         dst[off:end],

@@ -431,10 +431,10 @@ def test_transfer_dma_store_chunked(
 ) -> None:
     """Chunked DMA store submission must copy every descriptor exactly once.
 
-    32 KiB pages select the DMA path; DMA_STORE_CHUNK=5 with
+    32 KiB pages select the DMA path; DMA_CHUNK=5 with
     3 blocks x 4 tensors = 12 descriptors submits sub-batches of 5+5+2.
     """
-    monkeypatch.setattr(gpu_worker, "DMA_STORE_CHUNK", 5)
+    monkeypatch.setattr(gpu_worker, "DMA_CHUNK", 5)
     set_random_seed(seed)
 
     num_tensors = 4
@@ -465,7 +465,7 @@ def test_transfer_dma_store_chunked(
     )
     handler = worker._store_handler
     if current_platform.is_cuda():
-        assert handler._chunk_dma_stores
+        assert handler._chunk_dma_batches
 
     gpu_blocks = random.sample(range(num_gpu_blocks), 3)
     cpu_blocks = random.sample(range(num_cpu_blocks), 3)
@@ -492,6 +492,95 @@ def test_transfer_dma_store_chunked(
                 else orig_dst[cpu_block]
             )
             assert torch.equal(dst_tensor[cpu_block], expected)
+
+    worker.shutdown()
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+@pytest.mark.parametrize("device", DEVICES)
+@torch.inference_mode()
+def test_transfer_dma_load_chunked(
+    default_vllm_config, monkeypatch, seed: int, device: str
+) -> None:
+    """Chunked DMA load submission must copy every descriptor exactly once,
+    submitting sub-batches with STREAM source access order.
+
+    32 KiB pages select the DMA path; DMA_CHUNK=5 with
+    3 blocks x 4 tensors = 12 descriptors submits sub-batches of 5+5+2.
+    Stride-2 block ids keep descriptors non-contiguous on both sides so
+    merge_contiguous_descriptors cannot collapse them.
+    """
+    monkeypatch.setattr(gpu_worker, "DMA_CHUNK", 5)
+    set_random_seed(seed)
+
+    num_tensors = 4
+    num_gpu_blocks = 64
+    num_cpu_blocks = 256
+    page_size_bytes = 32 * 1024
+
+    kv_cache_tensors = [
+        CanonicalKVCacheTensor(
+            tensor=torch.zeros(
+                (num_gpu_blocks, page_size_bytes), dtype=torch.int8, device=device
+            ),
+            page_size_bytes=page_size_bytes,
+        )
+        for _ in range(num_tensors)
+    ]
+    kv_caches = CanonicalKVCaches(
+        tensors=kv_cache_tensors,
+        group_data_refs=[
+            [
+                CanonicalKVCacheRef(tensor_idx=i, page_size_bytes=page_size_bytes)
+                for i in range(num_tensors)
+            ]
+        ],
+    )
+    worker = CPUOffloadingWorker(
+        kv_caches=kv_caches, block_size_factor=1, num_cpu_blocks=num_cpu_blocks
+    )
+    handler = worker._load_handler
+    if current_platform.is_cuda():
+        assert handler._chunk_dma_batches
+
+    gpu_blocks = [0, 2, 4]
+    cpu_blocks = [1, 3, 5]
+
+    calls: list[tuple[int, bool]] = []
+    inner_swap = handler._swap_blocks_batch
+
+    def counting_swap(src, dst, sizes, is_src_access_order_any):
+        calls.append((len(sizes), is_src_access_order_any))
+        inner_swap(src, dst, sizes, is_src_access_order_any=is_src_access_order_any)
+
+    handler._swap_blocks_batch = counting_swap
+
+    for tensor in handler.src_tensors:
+        tensor.random_()
+    orig_dst_tensors = [x.clone() for x in handler.dst_tensors]
+
+    dst_spec = GPULoadStoreSpec(
+        gpu_blocks, group_sizes=(len(gpu_blocks),), block_indices=(0,)
+    )
+    assert worker.submit_load(1, CPULoadStoreSpec(cpu_blocks), dst_spec)
+    worker.wait({1})
+
+    if current_platform.is_cuda():
+        assert [num_descs for num_descs, _ in calls] == [5, 5, 2]
+        assert all(not order_any for _, order_any in calls)
+
+    block_map = dict(zip(gpu_blocks, cpu_blocks))
+    for src_tensor, dst_tensor, orig_dst in zip(
+        handler.src_tensors, handler.dst_tensors, orig_dst_tensors
+    ):
+        for gpu_block in range(num_gpu_blocks):
+            cpu_block = block_map.get(gpu_block)
+            expected = (
+                src_tensor[cpu_block]
+                if cpu_block is not None
+                else orig_dst[gpu_block].cpu()
+            )
+            assert torch.equal(dst_tensor[gpu_block].cpu(), expected)
 
     worker.shutdown()
 
