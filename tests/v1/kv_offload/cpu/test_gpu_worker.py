@@ -17,6 +17,7 @@ from vllm.v1.kv_offload.base import (
     CanonicalKVCacheTensor,
     GPULoadStoreSpec,
 )
+from vllm.v1.kv_offload.cpu import gpu_worker
 from vllm.v1.kv_offload.cpu.common import CPULoadStoreSpec
 from vllm.v1.kv_offload.cpu.gpu_worker import CPUOffloadingWorker, _DescriptorBuilder
 from vllm.v1.kv_offload.cpu.shared_offload_region import SharedOffloadRegion
@@ -418,6 +419,79 @@ def test_transfer_multi_group(
                 torch.testing.assert_close(
                     dst_view[dst_sub_block].cpu(), expected.cpu()
                 )
+
+    worker.shutdown()
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+@pytest.mark.parametrize("device", DEVICES)
+@torch.inference_mode()
+def test_transfer_dma_store_chunked(
+    default_vllm_config, monkeypatch, seed: int, device: str
+) -> None:
+    """Chunked DMA store submission must copy every descriptor exactly once.
+
+    32 KiB pages select the DMA path; DMA_STORE_CHUNK=5 with
+    3 blocks x 4 tensors = 12 descriptors submits sub-batches of 5+5+2.
+    """
+    monkeypatch.setattr(gpu_worker, "DMA_STORE_CHUNK", 5)
+    set_random_seed(seed)
+
+    num_tensors = 4
+    num_gpu_blocks = 64
+    num_cpu_blocks = 256
+    page_size_bytes = 32 * 1024
+
+    kv_cache_tensors = [
+        CanonicalKVCacheTensor(
+            tensor=torch.zeros(
+                (num_gpu_blocks, page_size_bytes), dtype=torch.int8, device=device
+            ),
+            page_size_bytes=page_size_bytes,
+        )
+        for _ in range(num_tensors)
+    ]
+    kv_caches = CanonicalKVCaches(
+        tensors=kv_cache_tensors,
+        group_data_refs=[
+            [
+                CanonicalKVCacheRef(tensor_idx=i, page_size_bytes=page_size_bytes)
+                for i in range(num_tensors)
+            ]
+        ],
+    )
+    worker = CPUOffloadingWorker(
+        kv_caches=kv_caches, block_size_factor=1, num_cpu_blocks=num_cpu_blocks
+    )
+    handler = worker._store_handler
+    if current_platform.is_cuda():
+        assert handler._chunk_dma_stores
+
+    gpu_blocks = random.sample(range(num_gpu_blocks), 3)
+    cpu_blocks = random.sample(range(num_cpu_blocks), 3)
+
+    for tensor in handler.src_tensors:
+        tensor.random_()
+    orig_dst_tensors = [x.clone() for x in handler.dst_tensors]
+
+    src_spec = GPULoadStoreSpec(
+        gpu_blocks, group_sizes=(len(gpu_blocks),), block_indices=(0,)
+    )
+    assert worker.submit_store(1, src_spec, CPULoadStoreSpec(cpu_blocks))
+    worker.wait({1})
+
+    block_map = dict(zip(cpu_blocks, gpu_blocks))
+    for src_tensor, dst_tensor, orig_dst in zip(
+        handler.src_tensors, handler.dst_tensors, orig_dst_tensors
+    ):
+        for cpu_block in range(num_cpu_blocks):
+            gpu_block = block_map.get(cpu_block)
+            expected = (
+                src_tensor[gpu_block].cpu()
+                if gpu_block is not None
+                else orig_dst[cpu_block]
+            )
+            assert torch.equal(dst_tensor[cpu_block], expected)
 
     worker.shutdown()
 

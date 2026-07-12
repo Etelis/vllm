@@ -32,6 +32,12 @@ from vllm.v1.kv_offload.cpu.swap_blocks_triton import (
 
 logger = init_logger(__name__)
 
+# GPU->CPU DMA stores are split into sub-batches submitted back-to-back on the
+# same stream, so the driver's descriptor command generation overlaps
+# copy-engine execution (H100 D2H: 1.2-1.8x for 8-128 KiB pages at n >= 1K).
+# CPU->GPU loads use ORDER_ANY source access, where a single call is fastest.
+DMA_STORE_CHUNK = 512
+
 
 def _select_swap_blocks_fn(
     kv_cache_groups_data_refs: list[list[CanonicalKVCacheRef]],
@@ -486,6 +492,11 @@ class SingleDirectionOffloadingHandler:
         # with descriptor count. The Triton kernel parallelizes across
         # descriptors, so merging could shrink its grid below NUM_SMS.
         self._merge_descriptors = self._swap_blocks_batch is ops.swap_blocks_batch
+        self._chunk_dma_stores = (
+            gpu_to_cpu
+            and self._swap_blocks_batch is ops.swap_blocks_batch
+            and current_platform.is_cuda()
+        )
 
         # GPU blocks may be smaller
         # cpu_page_size = gpu_page_size * block_size_factor.
@@ -602,7 +613,16 @@ class SingleDirectionOffloadingHandler:
         is_src_access_order_any = not self.gpu_to_cpu
         with current_platform.stream(stream):
             start_event.record(stream)
-            if num_copy_ops > 0:
+            if self._chunk_dma_stores and num_copy_ops > DMA_STORE_CHUNK:
+                for off in range(0, num_copy_ops, DMA_STORE_CHUNK):
+                    end = off + DMA_STORE_CHUNK
+                    self._swap_blocks_batch(
+                        src[off:end],
+                        dst[off:end],
+                        sizes[off:end],
+                        is_src_access_order_any=is_src_access_order_any,
+                    )
+            elif num_copy_ops > 0:
                 self._swap_blocks_batch(
                     src,
                     dst,
