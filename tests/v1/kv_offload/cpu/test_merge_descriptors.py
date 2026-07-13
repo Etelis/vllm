@@ -84,3 +84,39 @@ def test_single_descriptor_and_dtypes(dtype):
     )
     assert merge_contiguous_descriptors(src, dst, sizes) == 1
     assert sizes[0] == 3 * PAGE
+
+
+def test_min_mean_bytes_declines_and_preserves_arrays():
+    # 8 contiguous 8KiB pages -> mean would be 64KiB; require 128KiB -> no-op.
+    src, dst, sizes = _arrays(
+        [i * PAGE for i in range(8)], [i * PAGE for i in range(8)], [PAGE] * 8
+    )
+    orig = (src.copy(), dst.copy(), sizes.copy())
+    assert merge_contiguous_descriptors(src, dst, sizes, min_mean_bytes=128 * PAGE) == 8
+    assert (
+        (src == orig[0]).all() and (dst == orig[1]).all() and (sizes == orig[2]).all()
+    )
+
+
+def test_min_mean_bytes_met_merges():
+    # 16 contiguous 8KiB pages -> mean 128KiB meets a 16*PAGE bar exactly.
+    src, dst, sizes = _arrays(
+        [i * PAGE for i in range(16)], [i * PAGE for i in range(16)], [PAGE] * 16
+    )
+    assert merge_contiguous_descriptors(src, dst, sizes, min_mean_bytes=16 * PAGE) == 1
+    assert sizes[0] == 16 * PAGE
+
+
+def test_min_mean_bytes_partial_runs():
+    # Two runs of 4 pages -> mean 4*PAGE; bar at 5*PAGE declines, 4*PAGE merges.
+    def build():
+        return _arrays(
+            [i * PAGE for i in range(4)] + [10**9 + i * PAGE for i in range(4)],
+            [i * PAGE for i in range(4)] + [2 * 10**9 + i * PAGE for i in range(4)],
+            [PAGE] * 8,
+        )
+
+    src, dst, sizes = build()
+    assert merge_contiguous_descriptors(src, dst, sizes, min_mean_bytes=5 * PAGE) == 8
+    src, dst, sizes = build()
+    assert merge_contiguous_descriptors(src, dst, sizes, min_mean_bytes=4 * PAGE) == 2

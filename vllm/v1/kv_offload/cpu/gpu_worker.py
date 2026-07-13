@@ -40,6 +40,12 @@ logger = init_logger(__name__)
 # Jobs of <= DMA_CHUNK descriptors keep one call (loads: ORDER_ANY, fastest).
 DMA_CHUNK = 512
 
+# A well-merged load may leave the Triton path for the DMA engine, which
+# matches Triton bandwidth with zero SM usage. Solo-call crossover measured
+# on H100 at ~4x THRESHOLD_BYTES mean descriptor size (8 KiB pages: merged
+# DMA 1.49 ms at 128 KiB mean vs Triton 1.65 ms; DMA loses below that).
+ADAPTIVE_ROUTE_MIN_MEAN_BYTES = 4 * THRESHOLD_BYTES
+
 
 def _select_swap_blocks_fn(
     kv_cache_groups_data_refs: list[list[CanonicalKVCacheRef]],
@@ -351,7 +357,7 @@ class _DescriptorBuilder:
 
 
 def merge_contiguous_descriptors(
-    src: np.ndarray, dst: np.ndarray, sizes: np.ndarray
+    src: np.ndarray, dst: np.ndarray, sizes: np.ndarray, min_mean_bytes: int = 0
 ) -> int:
     """Coalesce descriptor runs that are contiguous in both src and dst.
 
@@ -367,9 +373,12 @@ def merge_contiguous_descriptors(
         src: source byte pointers, one per descriptor.
         dst: destination byte pointers, one per descriptor.
         sizes: descriptor sizes in bytes.
+        min_mean_bytes: if > 0, only merge when the merged mean descriptor
+            size reaches this value; otherwise leave the arrays untouched.
 
     Returns:
-        The merged descriptor count.
+        The merged descriptor count, or ``len(src)`` if no (or not enough)
+        merging is possible.
     """
     n = len(src)
     if n <= 1:
@@ -377,6 +386,10 @@ def merge_contiguous_descriptors(
     contig = (src[1:] == src[:-1] + sizes[:-1]) & (dst[1:] == dst[:-1] + sizes[:-1])
     if not contig.any():
         return n
+    if min_mean_bytes:
+        num_merged = n - int(np.count_nonzero(contig))
+        if int(sizes.sum()) < min_mean_bytes * num_merged:
+            return n
     starts = np.empty(n, dtype=bool)
     starts[0] = True
     np.logical_not(contig, out=starts[1:])
@@ -492,12 +505,14 @@ class SingleDirectionOffloadingHandler:
         )
         # Merging only pays on the DMA path, where submission cost scales
         # with descriptor count. The Triton kernel parallelizes across
-        # descriptors, so merging could shrink its grid below NUM_SMS.
-        self._merge_descriptors = self._swap_blocks_batch is ops.swap_blocks_batch
-        self._chunk_dma_batches = (
-            self._swap_blocks_batch is ops.swap_blocks_batch
-            and current_platform.is_cuda()
-        )
+        # descriptors, so merging could shrink its grid below NUM_SMS —
+        # unless the merge is good enough to route the job to DMA entirely
+        # (adaptive route below).
+        is_dma = self._swap_blocks_batch is ops.swap_blocks_batch
+        self._merge_descriptors = is_dma
+        self._adaptive_dma_route = not is_dma
+        self._chunk_on_cuda = current_platform.is_cuda()
+        self._chunk_dma_batches = is_dma and self._chunk_on_cuda
 
         # GPU blocks may be smaller
         # cpu_page_size = gpu_page_size * block_size_factor.
@@ -577,11 +592,22 @@ class SingleDirectionOffloadingHandler:
             all_sizes,
         )
 
-        if self._merge_descriptors and num_copy_ops > 1:
-            num_copy_ops = merge_contiguous_descriptors(all_src, all_dst, all_sizes)
-            src = src[:num_copy_ops]
-            dst = dst[:num_copy_ops]
-            sizes = sizes[:num_copy_ops]
+        routed_to_dma = False
+        if num_copy_ops > 1 and (self._merge_descriptors or self._adaptive_dma_route):
+            merged = merge_contiguous_descriptors(
+                all_src,
+                all_dst,
+                all_sizes,
+                min_mean_bytes=0
+                if self._merge_descriptors
+                else ADAPTIVE_ROUTE_MIN_MEAN_BYTES,
+            )
+            if merged < num_copy_ops:
+                num_copy_ops = merged
+                src = src[:num_copy_ops]
+                dst = dst[:num_copy_ops]
+                sizes = sizes[:num_copy_ops]
+                routed_to_dma = self._adaptive_dma_route
 
         stream = (
             self._stream_pool.pop() if self._stream_pool else current_platform.Stream()
@@ -612,22 +638,26 @@ class SingleDirectionOffloadingHandler:
         # writing; we must keep STREAM ordering so source reads are gated
         # by the transfer stream's wait_stream(compute) barrier.
         is_src_access_order_any = not self.gpu_to_cpu
+        swap_fn = ops.swap_blocks_batch if routed_to_dma else self._swap_blocks_batch
+        chunk_batches = self._chunk_dma_batches or (
+            routed_to_dma and self._chunk_on_cuda
+        )
         with current_platform.stream(stream):
             start_event.record(stream)
-            if self._chunk_dma_batches and num_copy_ops > DMA_CHUNK:
+            if chunk_batches and num_copy_ops > DMA_CHUNK:
                 # STREAM order for chunked loads too: it is strictly stronger
                 # ordering than ANY, and ANY-order chunks do not pipeline.
                 is_src_access_order_any = False
                 for off in range(0, num_copy_ops, DMA_CHUNK):
                     end = off + DMA_CHUNK
-                    self._swap_blocks_batch(
+                    swap_fn(
                         src[off:end],
                         dst[off:end],
                         sizes[off:end],
                         is_src_access_order_any=is_src_access_order_any,
                     )
             elif num_copy_ops > 0:
-                self._swap_blocks_batch(
+                swap_fn(
                     src,
                     dst,
                     sizes,
