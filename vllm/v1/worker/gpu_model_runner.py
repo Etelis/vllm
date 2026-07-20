@@ -4270,6 +4270,21 @@ class GPUModelRunner(
         optimistic_full = cudagraph_mode == CUDAGraphMode.FULL and getattr(
             offloader, "optimistic_full", False
         )
+        if optimistic_full and not getattr(
+            offloader, "of_dispatch_ok", lambda: True
+        )():
+            # The offloader's dirty-rate guard is in cooldown: dispatch this
+            # step on the piecewise path instead — the same substitution a
+            # dirty-step rerun makes, decided before the forward instead of
+            # after. Both paths produce exact output; only the cost differs.
+            optimistic_full = False
+            cudagraph_mode, batch_desc = self.cudagraph_dispatcher.dispatch(
+                num_tokens=num_tokens_padded,
+                uniform_decode=False,
+                has_lora=batch_desc.has_lora,
+                num_active_loras=batch_desc.num_active_loras,
+                invalid_modes={CUDAGraphMode.FULL},
+            )
         if optimistic_full:
             offloader.pre_step_optimistic()
         with (
