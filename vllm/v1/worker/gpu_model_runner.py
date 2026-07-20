@@ -4260,6 +4260,18 @@ class GPUModelRunner(
         # When spec decode is enabled, defer connector finalization
         # (wait_for_save + clear metadata) until after draft model runs.
         defer_kv_connector_finalize = self.speculative_config is not None
+
+        # Optimistic full-cudagraph weight streaming: offloaders that stream
+        # weights into fixed device buffers may run full-graph replays
+        # optimistically (assuming every weight the replay reads is resident)
+        # and expose a device miss counter to verify that after the fact.
+        # Arm the counter before the replay; check the verdict after it.
+        offloader = get_offloader()
+        optimistic_full = cudagraph_mode == CUDAGraphMode.FULL and getattr(
+            offloader, "optimistic_full", False
+        )
+        if optimistic_full:
+            offloader.pre_step_optimistic()
         with (
             set_forward_context(
                 attn_metadata,
@@ -4285,6 +4297,42 @@ class GPUModelRunner(
                 inputs_embeds=inputs_embeds,
                 **model_kwargs,
             )
+
+        if optimistic_full and offloader.post_step_verdict():
+            # The full-graph replay read at least one non-resident weight, so
+            # its output is stale. Re-run the same batch with full cudagraphs
+            # excluded (piecewise, or eager if no piecewise graph matches):
+            # the offloader's streaming path then executes in the graph gaps
+            # and produces exact output. The rerun is exact because it
+            # overwrites the same KV slots via the same slot mapping and
+            # sampling only happens afterwards, on the rerun's output.
+            rerun_mode, rerun_desc = self.cudagraph_dispatcher.dispatch(
+                num_tokens=num_tokens_padded,
+                uniform_decode=False,
+                has_lora=batch_desc.has_lora,
+                num_active_loras=batch_desc.num_active_loras,
+                invalid_modes={CUDAGraphMode.FULL},
+            )
+            with (
+                set_forward_context(
+                    attn_metadata,
+                    self.vllm_config,
+                    num_tokens=num_tokens_padded,
+                    num_tokens_across_dp=num_tokens_across_dp,
+                    cudagraph_runtime_mode=rerun_mode,
+                    batch_descriptor=rerun_desc,
+                    ubatch_slices=ubatch_slices_padded,
+                    slot_mapping=slot_mappings,
+                ),
+                record_function_or_nullcontext("gpu_model_runner: rerun"),
+            ):
+                model_output = self._model_forward(
+                    input_ids=input_ids,
+                    positions=positions,
+                    intermediate_tensors=intermediate_tensors,
+                    inputs_embeds=inputs_embeds,
+                    **model_kwargs,
+                )
 
         with record_function_or_nullcontext("gpu_model_runner: postprocess"):
             if self.use_aux_hidden_state_outputs:
