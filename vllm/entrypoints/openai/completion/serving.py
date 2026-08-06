@@ -3,6 +3,7 @@
 
 import asyncio
 import io
+import json
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from collections.abc import Sequence as GenericSequence
@@ -50,6 +51,32 @@ from vllm.utils.async_utils import merge_async_iterators
 from vllm.utils.collection_utils import as_list
 
 logger = init_logger(__name__)
+
+
+def _fast_sse_template(
+    request_id: str, created_time: int, model_name: str
+) -> tuple[str, str]:
+    """Per-request SSE frame template for the fast streaming path.
+
+    Frames rendered as `prefix + index + ',"text":' + json.dumps(text) +
+    suffix` are byte-identical to the Pydantic path
+    (`"data: " + chunk.model_dump_json(exclude_unset=True) + "\\n\\n"`)
+    for plain delta chunks: no echo, logprobs, token_ids, usage, or
+    finish_reason. Field order must track `CompletionStreamResponse` and
+    `CompletionResponseStreamChoice` declarations.
+    """
+    id_json = json.dumps(request_id, ensure_ascii=False)
+    model_json = json.dumps(model_name, ensure_ascii=False)
+    prefix = (
+        f'data: {{"id":{id_json},"object":"text_completion",'
+        f'"created":{created_time},"model":{model_json},'
+        f'"choices":[{{"index":'
+    )
+    suffix = (
+        ',"logprobs":null,"finish_reason":null,"stop_reason":null,'
+        '"prompt_token_ids":null,"token_ids":null}]}\n\n'
+    )
+    return prefix, suffix
 
 
 class OpenAIServingCompletion(GenerateBaseServing):
@@ -304,6 +331,20 @@ class OpenAIServingCompletion(GenerateBaseServing):
             stream_options, self.enable_force_include_usage
         )
 
+        # Fast SSE path: hand-rolled JSON, byte-identical to
+        # model_dump_json(exclude_unset=True) for the plain-delta case.
+        fast_sse = (
+            not request.echo
+            and request.logprobs is None
+            and not request.return_token_ids
+            and not include_continuous_usage
+        )
+        if fast_sse:
+            chunk_prefix, chunk_suffix = _fast_sse_template(
+                request_id, created_time, model_name
+            )
+            json_dumps = json.dumps
+
         last_res: RequestOutput | None = None
         try:
             async for prompt_idx, res in result_generator:
@@ -398,6 +439,14 @@ class OpenAIServingCompletion(GenerateBaseServing):
                     stop_reason = output.stop_reason
 
                     self._raise_if_error(finish_reason, request_id)
+
+                    if fast_sse and finish_reason is None:
+                        yield (
+                            f'{chunk_prefix}{i},"text":'
+                            f"{json_dumps(delta_text, ensure_ascii=False)}"
+                            f"{chunk_suffix}"
+                        )
+                        continue
 
                     chunk = CompletionStreamResponse(
                         id=request_id,
