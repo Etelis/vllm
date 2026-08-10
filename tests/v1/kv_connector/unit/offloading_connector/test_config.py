@@ -682,6 +682,54 @@ def test_canonical_layout_certifies_attention_hybrids():
     ).parallel.is_parallelism_agnostic
 
 
+def test_canonical_layout_certifies_uniform_type_wrapper():
+    """GLM-5.2/DSv3.2-style groups wrap same-type specs with different page
+    sizes (MLA plus its DSA indexer cache) in UniformTypeKVCacheSpecs; the
+    gate must look through the wrapper like the mapping derivation does."""
+
+    def uniform_group(indexer_spec) -> KVCacheConfig:
+        return KVCacheConfig(
+            num_blocks=0,
+            kv_cache_tensors=[],
+            kv_cache_groups=[
+                KVCacheGroupSpec(
+                    ["mla_layer", "indexer_layer"],
+                    UniformTypeKVCacheSpecs(
+                        block_size=16,
+                        kv_cache_specs={
+                            "mla_layer": _mla_spec(head_size=576),
+                            "indexer_layer": indexer_spec,
+                        },
+                    ),
+                )
+            ],
+        )
+
+    mla_wrapped = uniform_group(_mla_spec(head_size=128))
+    assert not build_offloading_config(
+        _make_vllm_config(), mla_wrapped
+    ).parallel.is_parallelism_agnostic
+
+    canonical = _make_vllm_config(extra_config={"canonical_layout": True})
+    assert build_offloading_config(
+        canonical, mla_wrapped
+    ).parallel.is_parallelism_agnostic
+
+    # one uncertifiable inner spec poisons the wrapper
+    swa_mla_wrapped = uniform_group(
+        SlidingWindowMLASpec(
+            block_size=16,
+            num_kv_heads=1,
+            head_size=576,
+            dtype=torch.float32,
+            sliding_window=128,
+        )
+    )
+    assert not build_offloading_config(
+        canonical, swa_mla_wrapped
+    ).parallel.is_parallelism_agnostic
+
+
 def test_canonical_layout_certifies_v2_model_runner():
     """Canonical bytes are certified per layer against live tensor strides at
     registration, so the static gate must not depend on the model-runner
