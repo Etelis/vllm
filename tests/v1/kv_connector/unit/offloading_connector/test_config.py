@@ -24,6 +24,7 @@ from vllm.v1.kv_cache_interface import (
     KVCacheConfig,
     KVCacheGroupSpec,
     KVCacheTensor,
+    KVQuantMode,
     MambaSpec,
     MLAAttentionSpec,
     SlidingWindowMLASpec,
@@ -679,6 +680,56 @@ def test_canonical_layout_certifies_attention_hybrids():
     )
     assert not build_offloading_config(
         canonical, swa_mla_groups
+    ).parallel.is_parallelism_agnostic
+
+
+def test_canonical_layout_certifies_per_token_head_quant():
+    """Per-token-head packed rows carry inline scales, so GQA groups certify
+    under the canonical layout; the direct layout and the MLA latent path
+    keep excluding it."""
+    pth_groups = KVCacheConfig(
+        num_blocks=0,
+        kv_cache_tensors=[],
+        kv_cache_groups=[
+            KVCacheGroupSpec(
+                ["l0"],
+                FullAttentionSpec(
+                    block_size=16,
+                    num_kv_heads=4,
+                    head_size=128,
+                    dtype=torch.float32,
+                    kv_quant_mode=KVQuantMode.FP8_PER_TOKEN_HEAD,
+                ),
+            )
+        ],
+    )
+    assert not build_offloading_config(
+        _make_vllm_config(), pth_groups
+    ).parallel.is_parallelism_agnostic
+
+    canonical = _make_vllm_config(extra_config={"canonical_layout": True})
+    assert build_offloading_config(
+        canonical, pth_groups
+    ).parallel.is_parallelism_agnostic
+
+    mla_pth_groups = KVCacheConfig(
+        num_blocks=0,
+        kv_cache_tensors=[],
+        kv_cache_groups=[
+            KVCacheGroupSpec(
+                ["l0"],
+                MLAAttentionSpec(
+                    block_size=16,
+                    num_kv_heads=1,
+                    head_size=576,
+                    dtype=torch.float32,
+                    kv_quant_mode=KVQuantMode.FP8_PER_TOKEN_HEAD,
+                ),
+            )
+        ],
+    )
+    assert not build_offloading_config(
+        canonical, mla_pth_groups
     ).parallel.is_parallelism_agnostic
 
 
