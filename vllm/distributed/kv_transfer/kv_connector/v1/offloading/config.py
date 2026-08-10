@@ -168,14 +168,11 @@ def build_offloading_config(
         and parallel_config.prefill_context_parallel_size == 1
     )
     # Canonical pages are topology-free by construction, so the canonical
-    # layout widens the gate to every config whose mappings derive portable:
-    # exactly-sharded or replicated GQA heads (writer rotation), the
-    # TP-replicated MLA latent (one canonical copy for all replicas), and
-    # attention-only hybrids (full + sliding-window groups), certified group
-    # by group. The
-    # model-runner version is irrelevant here — certification happens per
-    # layer against live tensor strides at registration, and create_worker
-    # fails closed against this flag if any layer cannot be certified.
+    # layout widens the gate to every config whose mappings derive portable,
+    # group by group: sharded or replicated GQA heads, the TP-replicated MLA
+    # latent, and attention-only hybrids. Certification happens per layer
+    # against live tensor strides at registration, and create_worker fails
+    # closed against this flag if any layer cannot be certified.
     if canonical_layout and not is_parallelism_agnostic:
         tp_size = parallel_config.tensor_parallel_size
         total_kv_heads = vllm_config.model_config.get_total_num_kv_heads()
@@ -201,9 +198,8 @@ def build_offloading_config(
                 return False
             if not isinstance(spec, (FullAttentionSpec, SlidingWindowSpec)):
                 return False
-            # Per-token-head quant is fine here: its packed layout carries
-            # each (token, head) row's scale inline, so head-shard fragments
-            # stay self-contained
+            # Per-token-head quant is fine: its packed rows carry their
+            # scales inline, so head-shard fragments stay self-contained
             return total_kv_heads % tp_size == 0 or tp_size % total_kv_heads == 0
 
         is_parallelism_agnostic = (

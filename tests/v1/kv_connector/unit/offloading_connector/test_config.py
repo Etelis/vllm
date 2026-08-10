@@ -129,12 +129,13 @@ def _make_sizing_kv_cache_config(packed: bool) -> KVCacheConfig:
     )
 
 
-def _full_attention_spec(block_size: int = 16) -> FullAttentionSpec:
+def _full_attention_spec(block_size: int = 16, **kwargs: Any) -> FullAttentionSpec:
     return FullAttentionSpec(
         block_size=block_size,
         num_kv_heads=4,
         head_size=128,
         dtype=torch.float32,
+        **kwargs,
     )
 
 
@@ -142,12 +143,14 @@ def _mla_spec(
     block_size: int = 16,
     head_size: int = 512,
     dtype: torch.dtype = torch.float32,
+    **kwargs: Any,
 ) -> MLAAttentionSpec:
     return MLAAttentionSpec(
         block_size=block_size,
         num_kv_heads=1,
         head_size=head_size,
         dtype=dtype,
+        **kwargs,
     )
 
 
@@ -207,8 +210,16 @@ def _make_mamba_hybrid_kv_cache_config() -> KVCacheConfig:
     )
 
 
-def _parallelism_agnostic(kv_cache_groups: list[KVCacheGroupSpec]) -> bool:
-    config = _make_vllm_config()
+def _parallelism_agnostic(
+    kv_cache_groups: list[KVCacheGroupSpec],
+    *,
+    canonical: bool = False,
+    v2: bool = False,
+) -> bool:
+    config = _make_vllm_config(
+        extra_config={"canonical_layout": True} if canonical else None
+    )
+    config.use_v2_model_runner = v2
     kv_cache_config = KVCacheConfig(
         num_blocks=0,
         kv_cache_tensors=[],
@@ -613,124 +624,60 @@ def test_canonical_layout_widens_parallelism_agnostic_to_mla():
     is requested."""
     mla_groups = [KVCacheGroupSpec(["l0"], _mla_spec(head_size=576))]
     assert not _parallelism_agnostic(mla_groups)
-
-    config = _make_vllm_config(extra_config={"canonical_layout": True})
-    kv_cache_config = KVCacheConfig(
-        num_blocks=0,
-        kv_cache_tensors=[],
-        kv_cache_groups=mla_groups,
-    )
-    offloading_config = build_offloading_config(config, kv_cache_config)
-    assert offloading_config.parallel.is_parallelism_agnostic
-    assert offloading_config.canonical_layout
+    assert _parallelism_agnostic(mla_groups, canonical=True)
 
     # Mamba hybrids stay out: their state layers can only derive opaque
     # (exact-topology) mappings
-    assert not build_offloading_config(
-        config, _make_mamba_hybrid_kv_cache_config()
-    ).parallel.is_parallelism_agnostic
+    mamba_groups = list(_make_mamba_hybrid_kv_cache_config().kv_cache_groups)
+    assert not _parallelism_agnostic(mamba_groups, canonical=True)
 
 
 def test_canonical_layout_certifies_attention_hybrids():
     """Hybrid attention models (full + sliding-window groups, e.g. gpt-oss)
     certify group by group under the canonical layout; every layer's bytes
     are head-shard fragments regardless of its window."""
-    hybrid_groups = KVCacheConfig(
-        num_blocks=0,
-        kv_cache_tensors=[],
-        kv_cache_groups=[
-            KVCacheGroupSpec(["l0"], _full_attention_spec()),
-            KVCacheGroupSpec(
-                ["l1"],
-                SlidingWindowSpec(
-                    block_size=16,
-                    num_kv_heads=4,
-                    head_size=128,
-                    dtype=torch.float32,
-                    sliding_window=128,
-                ),
+    hybrid_groups = [
+        KVCacheGroupSpec(["l0"], _full_attention_spec()),
+        KVCacheGroupSpec(
+            ["l1"],
+            SlidingWindowSpec(
+                block_size=16,
+                num_kv_heads=4,
+                head_size=128,
+                dtype=torch.float32,
+                sliding_window=128,
             ),
-        ],
-    )
-    assert not build_offloading_config(
-        _make_vllm_config(), hybrid_groups
-    ).parallel.is_parallelism_agnostic
-
-    canonical = _make_vllm_config(extra_config={"canonical_layout": True})
-    assert build_offloading_config(
-        canonical, hybrid_groups
-    ).parallel.is_parallelism_agnostic
+        ),
+    ]
+    assert not _parallelism_agnostic(hybrid_groups)
+    assert _parallelism_agnostic(hybrid_groups, canonical=True)
 
     # DSv4-style sliding-window MLA is not a head-sharded layout; stays out
-    swa_mla_groups = KVCacheConfig(
-        num_blocks=0,
-        kv_cache_tensors=[],
-        kv_cache_groups=[
-            KVCacheGroupSpec(
-                ["l0"],
-                SlidingWindowMLASpec(
-                    block_size=16,
-                    num_kv_heads=1,
-                    head_size=576,
-                    dtype=torch.float32,
-                    sliding_window=128,
-                ),
-            ),
-        ],
+    swa_mla = SlidingWindowMLASpec(
+        block_size=16,
+        num_kv_heads=1,
+        head_size=576,
+        dtype=torch.float32,
+        sliding_window=128,
     )
-    assert not build_offloading_config(
-        canonical, swa_mla_groups
-    ).parallel.is_parallelism_agnostic
+    assert not _parallelism_agnostic(
+        [KVCacheGroupSpec(["l0"], swa_mla)], canonical=True
+    )
 
 
 def test_canonical_layout_certifies_per_token_head_quant():
     """Per-token-head packed rows carry inline scales, so GQA groups certify
     under the canonical layout; the direct layout and the MLA latent path
     keep excluding it."""
-    pth_groups = KVCacheConfig(
-        num_blocks=0,
-        kv_cache_tensors=[],
-        kv_cache_groups=[
-            KVCacheGroupSpec(
-                ["l0"],
-                FullAttentionSpec(
-                    block_size=16,
-                    num_kv_heads=4,
-                    head_size=128,
-                    dtype=torch.float32,
-                    kv_quant_mode=KVQuantMode.FP8_PER_TOKEN_HEAD,
-                ),
-            )
-        ],
-    )
-    assert not build_offloading_config(
-        _make_vllm_config(), pth_groups
-    ).parallel.is_parallelism_agnostic
+    pth = KVQuantMode.FP8_PER_TOKEN_HEAD
+    pth_groups = [KVCacheGroupSpec(["l0"], _full_attention_spec(kv_quant_mode=pth))]
+    assert not _parallelism_agnostic(pth_groups)
+    assert _parallelism_agnostic(pth_groups, canonical=True)
 
-    canonical = _make_vllm_config(extra_config={"canonical_layout": True})
-    assert build_offloading_config(
-        canonical, pth_groups
-    ).parallel.is_parallelism_agnostic
-
-    mla_pth_groups = KVCacheConfig(
-        num_blocks=0,
-        kv_cache_tensors=[],
-        kv_cache_groups=[
-            KVCacheGroupSpec(
-                ["l0"],
-                MLAAttentionSpec(
-                    block_size=16,
-                    num_kv_heads=1,
-                    head_size=576,
-                    dtype=torch.float32,
-                    kv_quant_mode=KVQuantMode.FP8_PER_TOKEN_HEAD,
-                ),
-            )
-        ],
-    )
-    assert not build_offloading_config(
-        canonical, mla_pth_groups
-    ).parallel.is_parallelism_agnostic
+    mla_pth_groups = [
+        KVCacheGroupSpec(["l0"], _mla_spec(head_size=576, kv_quant_mode=pth))
+    ]
+    assert not _parallelism_agnostic(mla_pth_groups, canonical=True)
 
 
 def test_canonical_layout_certifies_uniform_type_wrapper():
@@ -738,36 +685,26 @@ def test_canonical_layout_certifies_uniform_type_wrapper():
     sizes (MLA plus its DSA indexer cache) in UniformTypeKVCacheSpecs; the
     gate must look through the wrapper like the mapping derivation does."""
 
-    def uniform_group(indexer_spec) -> KVCacheConfig:
-        return KVCacheConfig(
-            num_blocks=0,
-            kv_cache_tensors=[],
-            kv_cache_groups=[
-                KVCacheGroupSpec(
-                    ["mla_layer", "indexer_layer"],
-                    UniformTypeKVCacheSpecs(
-                        block_size=16,
-                        kv_cache_specs={
-                            "mla_layer": _mla_spec(head_size=576),
-                            "indexer_layer": indexer_spec,
-                        },
-                    ),
-                )
-            ],
-        )
+    def uniform_groups(indexer_spec) -> list[KVCacheGroupSpec]:
+        return [
+            KVCacheGroupSpec(
+                ["mla_layer", "indexer_layer"],
+                UniformTypeKVCacheSpecs(
+                    block_size=16,
+                    kv_cache_specs={
+                        "mla_layer": _mla_spec(head_size=576),
+                        "indexer_layer": indexer_spec,
+                    },
+                ),
+            )
+        ]
 
-    mla_wrapped = uniform_group(_mla_spec(head_size=128))
-    assert not build_offloading_config(
-        _make_vllm_config(), mla_wrapped
-    ).parallel.is_parallelism_agnostic
-
-    canonical = _make_vllm_config(extra_config={"canonical_layout": True})
-    assert build_offloading_config(
-        canonical, mla_wrapped
-    ).parallel.is_parallelism_agnostic
+    mla_wrapped = uniform_groups(_mla_spec(head_size=128))
+    assert not _parallelism_agnostic(mla_wrapped)
+    assert _parallelism_agnostic(mla_wrapped, canonical=True)
 
     # one uncertifiable inner spec poisons the wrapper
-    swa_mla_wrapped = uniform_group(
+    swa_mla_wrapped = uniform_groups(
         SlidingWindowMLASpec(
             block_size=16,
             num_kv_heads=1,
@@ -776,32 +713,16 @@ def test_canonical_layout_certifies_uniform_type_wrapper():
             sliding_window=128,
         )
     )
-    assert not build_offloading_config(
-        canonical, swa_mla_wrapped
-    ).parallel.is_parallelism_agnostic
+    assert not _parallelism_agnostic(swa_mla_wrapped, canonical=True)
 
 
 def test_canonical_layout_certifies_v2_model_runner():
     """Canonical bytes are certified per layer against live tensor strides at
     registration, so the static gate must not depend on the model-runner
     version — the v2 runner is the case the canonical layout exists for."""
-    kv_cache_config = KVCacheConfig(
-        num_blocks=0,
-        kv_cache_tensors=[],
-        kv_cache_groups=[KVCacheGroupSpec(["l0"], _full_attention_spec())],
-    )
-
-    config = _make_vllm_config()
-    config.use_v2_model_runner = True
-    assert not build_offloading_config(
-        config, kv_cache_config
-    ).parallel.is_parallelism_agnostic
-
-    config = _make_vllm_config(extra_config={"canonical_layout": True})
-    config.use_v2_model_runner = True
-    assert build_offloading_config(
-        config, kv_cache_config
-    ).parallel.is_parallelism_agnostic
+    groups = [KVCacheGroupSpec(["l0"], _full_attention_spec())]
+    assert not _parallelism_agnostic(groups, v2=True)
+    assert _parallelism_agnostic(groups, canonical=True, v2=True)
 
 
 def test_canonical_format_resolved_at_config_build():

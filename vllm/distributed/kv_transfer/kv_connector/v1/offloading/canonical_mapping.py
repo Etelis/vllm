@@ -264,7 +264,7 @@ def _attention_byte_regions(
     if kv_cache.ndim == 4 and tuple(kv_cache.shape[:3]) == (num_blocks, heads, bs):
         # The inner dim may differ from 2*head_size when per-(token, head)
         # scales are padded inline (or int4 packs two values per byte);
-        # _packed_kv_regions validates it against the real page size
+        # _packed_kv_regions validates it against the unpadded page size
         return _packed_kv_regions(kv_cache, spec, head_shard, num_head_shards, cp_size)
     if tuple(kv_cache.shape) == (num_blocks, 2, bs, heads, head_size):
         return _split_kv_regions(kv_cache, spec, head_shard, num_head_shards, cp_size)
