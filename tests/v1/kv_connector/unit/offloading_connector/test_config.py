@@ -623,18 +623,62 @@ def test_canonical_layout_widens_parallelism_agnostic_to_mla():
     assert offloading_config.parallel.is_parallelism_agnostic
     assert offloading_config.canonical_layout
 
-    # hybrid groupings stay out: their non-full-attention layers can only
-    # derive opaque (exact-topology) mappings
-    hybrid_config = KVCacheConfig(
+    # Mamba hybrids stay out: their state layers can only derive opaque
+    # (exact-topology) mappings
+    assert not build_offloading_config(
+        config, _make_mamba_hybrid_kv_cache_config()
+    ).parallel.is_parallelism_agnostic
+
+
+def test_canonical_layout_certifies_attention_hybrids():
+    """Hybrid attention models (full + sliding-window groups, e.g. gpt-oss)
+    certify group by group under the canonical layout; every layer's bytes
+    are head-shard fragments regardless of its window."""
+    hybrid_groups = KVCacheConfig(
         num_blocks=0,
         kv_cache_tensors=[],
         kv_cache_groups=[
             KVCacheGroupSpec(["l0"], _full_attention_spec()),
-            KVCacheGroupSpec(["l1"], _full_attention_spec()),
+            KVCacheGroupSpec(
+                ["l1"],
+                SlidingWindowSpec(
+                    block_size=16,
+                    num_kv_heads=4,
+                    head_size=128,
+                    dtype=torch.float32,
+                    sliding_window=128,
+                ),
+            ),
         ],
     )
     assert not build_offloading_config(
-        config, hybrid_config
+        _make_vllm_config(), hybrid_groups
+    ).parallel.is_parallelism_agnostic
+
+    canonical = _make_vllm_config(extra_config={"canonical_layout": True})
+    assert build_offloading_config(
+        canonical, hybrid_groups
+    ).parallel.is_parallelism_agnostic
+
+    # DSv4-style sliding-window MLA is not a head-sharded layout; stays out
+    swa_mla_groups = KVCacheConfig(
+        num_blocks=0,
+        kv_cache_tensors=[],
+        kv_cache_groups=[
+            KVCacheGroupSpec(
+                ["l0"],
+                SlidingWindowMLASpec(
+                    block_size=16,
+                    num_kv_heads=1,
+                    head_size=576,
+                    dtype=torch.float32,
+                    sliding_window=128,
+                ),
+            ),
+        ],
+    )
+    assert not build_offloading_config(
+        canonical, swa_mla_groups
     ).parallel.is_parallelism_agnostic
 
 
@@ -659,6 +703,26 @@ def test_canonical_layout_certifies_v2_model_runner():
     assert build_offloading_config(
         config, kv_cache_config
     ).parallel.is_parallelism_agnostic
+
+
+def test_canonical_format_resolved_at_config_build():
+    """The canonical format id needs the vLLM config context to resolve the
+    KV cache layout; consumers like the scheduler-side FileMapper run outside
+    that context, so build_offloading_config must resolve it eagerly."""
+    kv_cache_config = KVCacheConfig(
+        num_blocks=0,
+        kv_cache_tensors=[],
+        kv_cache_groups=[KVCacheGroupSpec(["l0"], _full_attention_spec())],
+    )
+
+    offloading_config = build_offloading_config(
+        _make_vllm_config(extra_config={"canonical_layout": True}), kv_cache_config
+    )
+    assert offloading_config.canonical_format is not None
+    assert offloading_config.canonical_format.startswith("v1-")
+
+    no_canonical = build_offloading_config(_make_vllm_config(), kv_cache_config)
+    assert no_canonical.canonical_format is None
 
 
 def test_prefer_cross_layer_blocks_yields_to_canonical_layout():
