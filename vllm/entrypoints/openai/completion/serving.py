@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import asyncio
+import json
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from collections.abc import Sequence as GenericSequence
@@ -48,6 +49,58 @@ from vllm.utils.collection_utils import as_list
 from vllm.utils.serial_utils import numpy2base64
 
 logger = init_logger(__name__)
+
+_SSE_PROBE_TEXT = "zZ_vllm_sse_probe_Zz"
+_SSE_PROBE_INDEX = 987654321
+
+
+def build_delta_frame_template(
+    request_id: str, created_time: int, model_name: str
+) -> tuple[str, str, str] | None:
+    """Build the invariant parts of a plain-delta SSE frame for one stream.
+
+    Everything except the choice index and the delta text is constant for the
+    lifetime of a stream, so it is rendered once instead of once per chunk.
+    The template is derived from the serializer itself -- one probe chunk is
+    dumped and split on sentinel values -- so frames stay byte-identical to
+    ``model_dump_json(exclude_unset=True)`` even if the response models gain
+    fields.
+
+    Args:
+        request_id: The ``id`` echoed on every chunk of this stream.
+        created_time: The ``created`` timestamp for this stream.
+        model_name: The ``model`` echoed on every chunk of this stream.
+
+    Returns:
+        A ``(prefix, infix, suffix)`` triple such that
+        ``prefix + str(index) + infix + json.dumps(text) + suffix`` is the
+        frame, or None if the sentinels are not uniquely recoverable.
+    """
+    probe = CompletionStreamResponse(
+        id=request_id,
+        object="text_completion",
+        created=created_time,
+        model=model_name,
+        choices=[
+            CompletionResponseStreamChoice(
+                index=_SSE_PROBE_INDEX,
+                text=_SSE_PROBE_TEXT,
+                logprobs=None,
+                finish_reason=None,
+                stop_reason=None,
+                prompt_token_ids=None,
+                token_ids=None,
+            )
+        ],
+    )
+    frame = f"data: {probe.model_dump_json(exclude_unset=True)}\n\n"
+    index_marker = str(_SSE_PROBE_INDEX)
+    text_marker = json.dumps(_SSE_PROBE_TEXT)
+    if frame.count(index_marker) != 1 or frame.count(text_marker) != 1:
+        return None
+    prefix, rest = frame.split(index_marker, 1)
+    infix, suffix = rest.split(text_marker, 1)
+    return prefix, infix, suffix
 
 
 class OpenAIServingCompletion(GenerateBaseServing):
@@ -305,6 +358,28 @@ class OpenAIServingCompletion(GenerateBaseServing):
             stream_options, self.enable_force_include_usage
         )
 
+        # Plain delta chunks carry no per-chunk state beyond index and text, so
+        # they are rendered from a per-stream template. Anything else (echo,
+        # logprobs, token ids, continuous usage, terminal chunks) falls through
+        # to the model path below.
+        delta_template = None
+        if (
+            not request.echo
+            and request.logprobs is None
+            and not request.return_token_ids
+            and not include_continuous_usage
+        ):
+            try:
+                delta_template = build_delta_frame_template(
+                    request_id, created_time, model_name
+                )
+            except Exception:
+                # Fall back to the model path so serialization failures (e.g.
+                # a caller-supplied request_id holding a lone surrogate)
+                # surface where they always have: inside the generator, as a
+                # streamed error, rather than as a torn response.
+                delta_template = None
+
         last_res: RequestOutput | None = None
         try:
             async for prompt_idx, res in result_generator:
@@ -400,6 +475,15 @@ class OpenAIServingCompletion(GenerateBaseServing):
                     stop_reason = output.stop_reason
 
                     self._raise_if_error(finish_reason, request_id)
+
+                    if delta_template is not None and finish_reason is None:
+                        prefix, infix, suffix = delta_template
+                        yield (
+                            f"{prefix}{i}{infix}"
+                            f"{json.dumps(delta_text, ensure_ascii=False)}"
+                            f"{suffix}"
+                        )
+                        continue
 
                     chunk = CompletionStreamResponse(
                         id=request_id,

@@ -1,0 +1,22 @@
+{
+  "label": "a2_m2",
+  "mode": 2,
+  "pin": 1,
+  "conc": 512,
+  "nprompts": 800,
+  "output_throughput": 8620.64,
+  "total_throughput": null,
+  "req_throughput": 16.84,
+  "mean_tpot_ms": 44.85,
+  "p99_tpot_ms": 52.78,
+  "mean_itl_ms": 44.87,
+  "duration_s": 47.51,
+  "total_output_tokens": 409600.0,
+  "frontend_cpu_s": 8.93,
+  "engine_cpu_s": 11.53,
+  "wall_s": 58.22,
+  "frontend_affinity": "10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,74,76,78,80,82,84,86,88,90,92,94,96,98,100,102,104",
+  "engine_affinity": "10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,74,76,78,80,82,84,86,88,90,92,94,96,98,100,102,104",
+  "frontend_us_per_token": 21.8,
+  "frontend_cores": 0.188
+}
