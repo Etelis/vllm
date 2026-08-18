@@ -1,0 +1,300 @@
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" Paris","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"Paris","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" is","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" capital","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" of","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" France","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"Paris","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" is","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" capital","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" of","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" France","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"Paris","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" is","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" capital","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" of","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" France","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"Paris","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" is","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" capital","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" of","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" France","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"Paris","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" is","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" capital","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" of","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" France","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":"length","stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-b2c6bfad38c5cac7","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[],"usage":{"prompt_tokens":5,"total_tokens":53,"completion_tokens":48},"system_fingerprint":"vllm-0.27.2rc1.dev18+g3d204dfda-e60830e4"}
+
+data: [DONE]
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n   ","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" if","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" <=","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" ","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"1","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":":","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n       ","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" return","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n   ","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" else","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":":","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n       ","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" return","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" fib","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"(","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"-","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"1","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":")","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" +","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" fib","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"(","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"-","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"2","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":")","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"print","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"(","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"fib","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"(","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"1","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"0","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"))","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"```","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"This","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" function","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" uses","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" a","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" recursive","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" approach","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" to","logprobs":null,"finish_reason":"length","stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-8a32de1f54959231","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[],"usage":{"prompt_tokens":5,"total_tokens":53,"completion_tokens":48},"system_fingerprint":"vllm-0.27.2rc1.dev18+g3d204dfda-e60830e4"}
+
+data: [DONE]
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":" 📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"\n","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"📚","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":null,"stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":"length","stop_reason":null,"prompt_token_ids":null,"token_ids":null}]}
+
+data: {"id":"cmpl-a34fc123eb72d1f8","object":"text_completion","created":1787074089,"model":"HuggingFaceTB/SmolLM2-360M-Instruct","choices":[],"usage":{"prompt_tokens":22,"total_tokens":70,"completion_tokens":48},"system_fingerprint":"vllm-0.27.2rc1.dev18+g3d204dfda-e60830e4"}
+
+data: [DONE]
+
