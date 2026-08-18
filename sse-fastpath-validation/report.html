@@ -5,441 +5,233 @@
 
 <style>
 :root {
-  --bg:        #F6F7F9;
-  --surface:   #FFFFFF;
-  --sunk:      #EDF0F4;
-  --text:      #161B22;
-  --muted:     #5A6673;
-  --rule:      #DDE2E8;
-  --accent:    #2F5D7C;
-  --gain:      #1F6F5C;
-  --base:      #8C3B2E;
-  --shadow:    0 1px 2px rgba(22,27,34,.05), 0 8px 24px -16px rgba(22,27,34,.28);
+  --bg:#F6F7F9; --surface:#FFFFFF; --sunk:#EDF0F4; --text:#161B22;
+  --muted:#5A6673; --rule:#DDE2E8; --accent:#2F5D7C; --gain:#1F6F5C;
+  --base:#8C3B2E; --warn:#8A6A1F;
+  --shadow:0 1px 2px rgba(22,27,34,.05), 0 8px 24px -16px rgba(22,27,34,.28);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg:      #12161B;
-    --surface: #181D24;
-    --sunk:    #1F252D;
-    --text:    #E4E8ED;
-    --muted:   #93A0AE;
-    --rule:    #262E37;
-    --accent:  #6FA8CF;
-    --gain:    #4FB79A;
-    --base:    #D2705F;
-    --shadow:  0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+    --bg:#12161B; --surface:#181D24; --sunk:#1F252D; --text:#E4E8ED;
+    --muted:#93A0AE; --rule:#262E37; --accent:#6FA8CF; --gain:#4FB79A;
+    --base:#D2705F; --warn:#D9B65A;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
   }
 }
 :root[data-theme="dark"] {
-  --bg:      #12161B;
-  --surface: #181D24;
-  --sunk:    #1F252D;
-  --text:    #E4E8ED;
-  --muted:   #93A0AE;
-  --rule:    #262E37;
-  --accent:  #6FA8CF;
-  --gain:    #4FB79A;
-  --base:    #D2705F;
-  --shadow:  0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+  --bg:#12161B; --surface:#181D24; --sunk:#1F252D; --text:#E4E8ED;
+  --muted:#93A0AE; --rule:#262E37; --accent:#6FA8CF; --gain:#4FB79A;
+  --base:#D2705F; --warn:#D9B65A;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
 }
-
-* { box-sizing: border-box; }
-
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: Newsreader, Georgia, serif;
-  font-size: 1.0625rem;
-  line-height: 1.65;
-  -webkit-font-smoothing: antialiased;
-}
-
-.wrap {
-  max-width: 60rem;
-  margin: 0 auto;
-  padding: clamp(2rem, 5vw, 4.5rem) clamp(1.1rem, 4vw, 2.5rem) 5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 3.25rem;
-}
-
-.prose { max-width: 40rem; display: flex; flex-direction: column; gap: 1rem; }
-
-h1, h2, h3, .eyebrow, .stat-v, th, .tag {
-  font-family: Archivo, "Helvetica Neue", Arial, sans-serif;
-}
-
-.eyebrow {
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: .7rem;
-  font-weight: 500;
-  letter-spacing: .14em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin: 0;
-}
-
-h1 {
-  font-size: clamp(2.1rem, 5.5vw, 3.1rem);
-  font-weight: 700;
-  letter-spacing: -.02em;
-  line-height: 1.08;
-  text-wrap: balance;
-  margin: .5rem 0 0;
-}
-
-.deck {
-  font-size: 1.2rem;
-  color: var(--muted);
-  max-width: 34rem;
-  margin: .9rem 0 0;
-  text-wrap: pretty;
-}
-
-h2 {
-  font-size: 1.4rem;
-  font-weight: 600;
-  letter-spacing: -.01em;
-  margin: 0;
-  text-wrap: balance;
-}
-
-h3 {
-  font-size: .95rem;
-  font-weight: 600;
-  margin: 0 0 .3rem;
-}
-
-p { margin: 0; text-wrap: pretty; }
-
-section { display: flex; flex-direction: column; gap: 1.15rem; }
-
-.head {
-  display: flex;
-  align-items: baseline;
-  gap: .85rem;
-  padding-bottom: .6rem;
-  border-bottom: 1px solid var(--rule);
-}
-.head .n {
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: .72rem;
-  color: var(--accent);
-  letter-spacing: .08em;
-  flex: none;
-}
-
-/* measurement strip ---------------------------------------------------- */
-.strip {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
-  gap: 1px;
-  background: var(--rule);
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  overflow: hidden;
-  box-shadow: var(--shadow);
-}
-.stat {
-  background: var(--surface);
-  padding: 1.25rem 1.35rem 1.4rem;
-  display: flex;
-  flex-direction: column;
-  gap: .3rem;
-}
-.stat-k {
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: .68rem;
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-.stat-v {
-  font-size: 2.1rem;
-  font-weight: 700;
-  letter-spacing: -.03em;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.05;
-  color: var(--gain);
-}
-.stat-n {
-  font-size: .9rem;
-  color: var(--muted);
-  line-height: 1.45;
-}
-
-/* data tables ---------------------------------------------------------- */
-.scroll {
-  overflow-x: auto;
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  background: var(--surface);
-}
-table {
-  border-collapse: collapse;
-  width: 100%;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: .82rem;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-caption {
-  text-align: left;
-  padding: .85rem 1rem .1rem;
-  font-family: Archivo, sans-serif;
-  font-size: .9rem;
-  font-weight: 600;
-  color: var(--text);
-}
-caption span {
-  display: block;
-  font-family: Newsreader, serif;
-  font-weight: 400;
-  font-size: .9rem;
-  color: var(--muted);
-  margin-top: .15rem;
-  white-space: normal;
-}
-th {
-  text-align: right;
-  font-size: .68rem;
-  font-weight: 600;
-  letter-spacing: .07em;
-  text-transform: uppercase;
-  color: var(--muted);
-  padding: .7rem 1rem;
-  border-bottom: 1px solid var(--rule);
-}
-th:first-child, td:first-child { text-align: left; }
-td { padding: .55rem 1rem; text-align: right; border-bottom: 1px solid var(--rule); }
-tbody tr:last-child td { border-bottom: none; }
-tr.median td {
-  background: var(--sunk);
-  font-weight: 600;
-  border-top: 1px solid var(--rule);
-}
-.up   { color: var(--gain); font-weight: 600; }
-.flat { color: var(--muted); }
-.name-base { color: var(--base); }
-
-.tag {
-  display: inline-block;
-  font-family: "IBM Plex Mono", monospace;
-  font-size: .65rem;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  padding: .12rem .45rem;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
-  color: var(--muted);
-  vertical-align: 1px;
-}
-
-code {
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: .85em;
-  background: var(--sunk);
-  padding: .1em .35em;
-  border-radius: 2px;
-}
-pre {
-  margin: 0;
-  overflow-x: auto;
-  background: var(--sunk);
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  padding: 1rem 1.15rem;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: .78rem;
-  line-height: 1.7;
-}
-pre code { background: none; padding: 0; }
-
-.note {
-  border-left: 2px solid var(--accent);
-  padding: .15rem 0 .15rem 1.1rem;
-  color: var(--muted);
-  max-width: 40rem;
-}
-.note strong { color: var(--text); font-family: Archivo, sans-serif; font-weight: 600; }
-
-ul { margin: 0; padding-left: 1.15rem; display: flex; flex-direction: column; gap: .55rem; max-width: 40rem; }
-li::marker { color: var(--accent); }
-
-.env {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-  gap: 1.1rem 1.5rem;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: .76rem;
-  color: var(--muted);
-  border-top: 1px solid var(--rule);
-  padding-top: 1.4rem;
-}
-.env b { display: block; color: var(--text); font-weight: 500; margin-bottom: .15rem; }
-
-footer {
-  border-top: 1px solid var(--rule);
-  padding-top: 1.4rem;
-  font-family: "IBM Plex Mono", monospace;
-  font-size: .72rem;
-  color: var(--muted);
-  line-height: 1.8;
-}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font-family:Newsreader,Georgia,serif;font-size:1.0625rem;line-height:1.65;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:62rem;margin:0 auto;
+  padding:clamp(2rem,5vw,4.5rem) clamp(1.1rem,4vw,2.5rem) 5rem;
+  display:flex;flex-direction:column;gap:3.25rem}
+.prose{max-width:40rem;display:flex;flex-direction:column;gap:1rem}
+h1,h2,h3,.eyebrow,.stat-v,th{font-family:Archivo,"Helvetica Neue",Arial,sans-serif}
+.eyebrow{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.7rem;
+  font-weight:500;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);margin:0}
+h1{font-size:clamp(2.1rem,5.5vw,3.1rem);font-weight:700;letter-spacing:-.02em;
+  line-height:1.08;text-wrap:balance;margin:.5rem 0 0}
+.deck{font-size:1.2rem;color:var(--muted);max-width:36rem;margin:.9rem 0 0;
+  text-wrap:pretty}
+h2{font-size:1.4rem;font-weight:600;letter-spacing:-.01em;margin:0;
+  text-wrap:balance}
+p{margin:0;text-wrap:pretty}
+section{display:flex;flex-direction:column;gap:1.15rem}
+.head{display:flex;align-items:baseline;gap:.85rem;padding-bottom:.6rem;
+  border-bottom:1px solid var(--rule)}
+.head .n{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.72rem;
+  color:var(--accent);letter-spacing:.08em;flex:none}
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));
+  gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:3px;
+  overflow:hidden;box-shadow:var(--shadow)}
+.stat{background:var(--surface);padding:1.25rem 1.35rem 1.4rem;display:flex;
+  flex-direction:column;gap:.3rem}
+.stat-k{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.68rem;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.stat-v{font-size:2rem;font-weight:700;letter-spacing:-.03em;
+  font-variant-numeric:tabular-nums;line-height:1.05;color:var(--gain)}
+.stat-n{font-size:.9rem;color:var(--muted);line-height:1.45}
+.scroll{overflow-x:auto;border:1px solid var(--rule);border-radius:3px;
+  background:var(--surface)}
+table{border-collapse:collapse;width:100%;
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.8rem;
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+caption{text-align:left;padding:.85rem 1rem .1rem;font-family:Archivo,sans-serif;
+  font-size:.9rem;font-weight:600;color:var(--text)}
+caption span{display:block;font-family:Newsreader,serif;font-weight:400;
+  font-size:.9rem;color:var(--muted);margin-top:.15rem;white-space:normal}
+th{text-align:right;font-size:.66rem;font-weight:600;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--muted);padding:.7rem .85rem;
+  border-bottom:1px solid var(--rule)}
+th:first-child,td:first-child{text-align:left}
+td{padding:.5rem .85rem;text-align:right;border-bottom:1px solid var(--rule)}
+tbody tr:last-child td{border-bottom:none}
+tr.sep td{border-top:2px solid var(--rule)}
+.up{color:var(--gain);font-weight:600}
+.flat{color:var(--muted)}
+.nm{color:var(--base)}
+code{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.85em;
+  background:var(--sunk);padding:.1em .35em;border-radius:2px}
+pre{margin:0;overflow-x:auto;background:var(--sunk);border:1px solid var(--rule);
+  border-radius:3px;padding:1rem 1.15rem;
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.78rem;
+  line-height:1.7}
+pre code{background:none;padding:0}
+.note{border-left:2px solid var(--accent);padding:.15rem 0 .15rem 1.1rem;
+  color:var(--muted);max-width:40rem}
+.note.warn{border-left-color:var(--warn)}
+.note strong{color:var(--text);font-family:Archivo,sans-serif;font-weight:600}
+ul{margin:0;padding-left:1.15rem;display:flex;flex-direction:column;gap:.55rem;
+  max-width:40rem}
+li::marker{color:var(--accent)}
+.env{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));
+  gap:1.1rem 1.5rem;font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:.76rem;color:var(--muted);border-top:1px solid var(--rule);
+  padding-top:1.4rem}
+.env b{display:block;color:var(--text);font-weight:500;margin-bottom:.15rem}
+footer{border-top:1px solid var(--rule);padding-top:1.4rem;
+  font-family:"IBM Plex Mono",monospace;font-size:.72rem;color:var(--muted);
+  line-height:1.8}
 </style>
 
 <div class="wrap">
 
-  <header>
-    <p class="eyebrow">vLLM · streaming completions · 1×H200</p>
-    <h1>The frontend ceiling</h1>
-    <p class="deck">vLLM's OpenAI API server is one asyncio loop, so it gets one core. Rendering stream deltas from a per-stream template instead of a Pydantic model raises that ceiling by a third.</p>
-  </header>
+<header>
+  <p class="eyebrow">vLLM · streaming completions · 8 models · 1×H200</p>
+  <h1>The frontend ceiling</h1>
+  <p class="deck">vLLM's OpenAI API server is one asyncio loop, so it gets one core. Rendering stream deltas from a per-stream template instead of a Pydantic model cuts what that core spends per token by ~30% — on every model from 360M to 120B.</p>
+</header>
 
-  <div class="strip">
-    <div class="stat">
-      <span class="stat-k">Output throughput</span>
-      <span class="stat-v">+34.9%</span>
-      <span class="stat-n">33,411 → 45,061 tok/s, frontend-bound</span>
-    </div>
-    <div class="stat">
-      <span class="stat-k">Frontend CPU</span>
-      <span class="stat-v">−25.7%</span>
-      <span class="stat-n">30.21 → 22.44 µs per streamed token</span>
-    </div>
-    <div class="stat">
-      <span class="stat-k">Wire differences</span>
-      <span class="stat-v">0</span>
-      <span class="stat-n">11 arms, 150 frames, one digest</span>
-    </div>
+<div class="strip">
+  <div class="stat">
+    <span class="stat-k">Frontend CPU / token</span>
+    <span class="stat-v">−28%</span>
+    <span class="stat-n">~30 → ~22 µs, on all 8 models</span>
   </div>
+  <div class="stat">
+    <span class="stat-k">Throughput, when FE-bound</span>
+    <span class="stat-v">+27–38%</span>
+    <span class="stat-n">4 of 8 models; unchanged on the rest</span>
+  </div>
+  <div class="stat">
+    <span class="stat-k">Frames per token</span>
+    <span class="stat-v">0.98</span>
+    <span class="stat-n">vs 0.74 stock — stock coalesces under load</span>
+  </div>
+</div>
 
-  <section>
-    <div class="head"><span class="n">FINDING</span><h2>Why a microsecond per token moves throughput</h2></div>
-    <div class="prose">
-      <p>Each streamed token builds a <code>CompletionStreamResponse</code>, validates it, and serializes it — 7.5 µs of Python, of which 4.2 µs is model construction. Everything in that frame except the choice index and the delta text is constant for the whole stream.</p>
-      <p>That cost would be uninteresting if the API server could spread it across cores. It cannot: the server is a single asyncio event loop, so one process is confined to one core. Across every baseline arm measured here the frontend sat at <strong>1.006–1.013 cores</strong> — saturated, whether or not it was pinned there.</p>
-      <p>So the frontend's throughput is simply the reciprocal of its per-token CPU cost, and the measurements say exactly that:</p>
-    </div>
-    <div class="note">
-      <p><strong>Predicted from CPU alone:</strong> 10⁶ ⁄ 30.21 µs = 33,102 tok/s. <strong>Measured:</strong> 33,411. After the change, 10⁶ ⁄ 22.44 = 44,563 predicted against 45,061 measured — both within 1.5%. The API server, not the client and not the GPU, is what binds.</p>
-    </div>
-  </section>
+<section>
+  <div class="head"><span class="n">RESULT</span><h2>A per-frame cost, not a per-model one</h2></div>
+  <div class="prose">
+    <p>Each streamed chunk builds a <code>CompletionStreamResponse</code>, validates it, and serializes it — 7.5 µs of Python, of which 4.2 µs is model construction. Everything in that frame except the choice index and the delta text is constant for the whole stream.</p>
+    <p>Because it is per frame, the saving does not care what model is behind it. Across eight models spanning 360M to 120B and four tokenizer families, stock frontend CPU per streamed token lands between <strong>29.0 and 32.4 µs</strong>, and the template lands between <strong>20.5 and 22.9 µs</strong>. That is the load-bearing result.</p>
+  </div>
+  <div class="scroll">
+    <table>
+      <caption>Eight models, stream_interval=1 <span>Frontend CPU read from /proc; throughput from vllm bench serve. "FE cores" is what the API-server process drew during the request phase, out of 32 available.</span></caption>
+      <thead><tr>
+        <th>Model</th><th>Vocab</th><th>tok/s stock</th><th>tok/s template</th>
+        <th>Δ</th><th>µs/tok stock</th><th>µs/tok tmpl</th><th>Δ CPU</th><th>FE cores stock</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>SmolLM2-360M</td><td>49k</td><td>34,715</td><td>47,806</td><td class="up">+37.7%</td><td>29.03</td><td>21.11</td><td class="up">−27.3%</td><td>1.008</td></tr>
+        <tr><td>TinyLlama-1.1B</td><td>32k</td><td>34,538</td><td>47,081</td><td class="up">+36.3%</td><td>29.07</td><td>21.37</td><td class="up">−26.5%</td><td>1.004</td></tr>
+        <tr><td>Qwen3-0.6B</td><td>152k</td><td>33,411</td><td>45,061</td><td class="up">+34.9%</td><td>30.21</td><td>22.44</td><td class="up">−25.7%</td><td>1.010</td></tr>
+        <tr><td>Qwen3-1.7B</td><td>152k</td><td>33,522</td><td>42,513</td><td class="up">+26.8%</td><td>30.13</td><td>22.22</td><td class="up">−26.3%</td><td>1.010</td></tr>
+        <tr class="sep"><td>SmolLM2-1.7B</td><td>49k</td><td>28,893</td><td>29,035</td><td class="flat">+0.5%</td><td>31.69</td><td>22.26</td><td class="up">−29.8%</td><td>0.916</td></tr>
+        <tr><td>Qwen3-4B</td><td>152k</td><td>27,720</td><td>27,769</td><td class="flat">+0.2%</td><td>31.54</td><td>22.11</td><td class="up">−29.9%</td><td>0.872</td></tr>
+        <tr><td>Qwen3-30B-A3B-FP8</td><td>152k</td><td>21,149</td><td>21,195</td><td class="flat">+0.2%</td><td>31.49</td><td>22.01</td><td class="up">−30.1%</td><td>0.666</td></tr>
+        <tr><td>gpt-oss-120b</td><td>201k</td><td>8,329</td><td>8,112</td><td class="flat">noise</td><td>32.38</td><td>22.24</td><td class="up">−31.3%</td><td>0.270</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note">
+    <p><strong>One number predicts the whole table.</strong> Every model whose stock frontend drew ≈1.00 cores gained 27–38% throughput; every model below that gained nothing. SmolLM2-1.7B at 0.916 cores is the boundary case, and it gets nothing. The API server saturates near <strong>10⁶⁄30 ≈ 33k output tok/s</strong> per process; above that line the change buys tokens, below it the change buys back CPU.</p>
+  </div>
+</section>
 
-  <section>
-    <div class="head"><span class="n">TABLE 1</span><h2>Throughput, frontend pinned to one core</h2></div>
-    <div class="scroll">
-      <table>
-        <caption>Phase A <span>Explicit one-core budget for the API server; engine on cores 1–8, benchmark client on 9–31. Arms alternated, two repetitions each.</span></caption>
-        <thead>
-          <tr><th>Arm</th><th>Render path</th><th>Output tok/s</th><th>FE µs/token</th><th>FE cores</th><th>Mean TPOT</th><th>p99 TPOT</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>a1_m0</td><td class="name-base">model</td><td>33,457</td><td>30.16</td><td>1.009</td><td>13.57 ms</td><td>16.50 ms</td></tr>
-          <tr><td>a2_m0</td><td class="name-base">model</td><td>33,365</td><td>30.26</td><td>1.010</td><td>13.54 ms</td><td>16.86 ms</td></tr>
-          <tr><td>a1_m1</td><td>template</td><td>45,081</td><td>22.42</td><td>1.011</td><td>9.28 ms</td><td>11.27 ms</td></tr>
-          <tr><td>a2_m1</td><td>template</td><td>45,041</td><td>22.45</td><td>1.011</td><td>9.55 ms</td><td>11.57 ms</td></tr>
-          <tr><td>a1_m2</td><td>template, derived</td><td>44,290</td><td>22.84</td><td>1.012</td><td>9.50 ms</td><td>11.66 ms</td></tr>
-          <tr><td>a2_m2</td><td>template, derived</td><td>44,744</td><td>22.64</td><td>1.013</td><td>9.36 ms</td><td>11.13 ms</td></tr>
-          <tr class="median"><td>median</td><td class="name-base">model</td><td>33,411</td><td>30.21</td><td>1.010</td><td>13.56 ms</td><td>16.68 ms</td></tr>
-          <tr class="median"><td>median</td><td>template</td><td class="up">45,061 &nbsp;+34.9%</td><td class="up">22.44 &nbsp;−25.7%</td><td>1.011</td><td class="up">9.42 ms</td><td class="up">11.42 ms</td></tr>
-          <tr class="median"><td>median</td><td>template, derived</td><td class="up">44,517 &nbsp;+33.2%</td><td class="up">22.74 &nbsp;−24.7%</td><td>1.013</td><td class="up">9.43 ms</td><td class="up">11.40 ms</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
+<section>
+  <div class="head"><span class="n">CAVEAT</span><h2>An existing flag already buys the throughput</h2></div>
+  <div class="prose">
+    <p><code>--stream-interval</code> is merged upstream and attacks the same cost with a bigger lever: it emits one frame per N tokens. Setting it to 2 lifts the stock server from 32,446 to 43,599 tok/s on its own — the same win, for free, today. At <code>stream_interval ≥ 2</code> this change adds no throughput at all.</p>
+    <p>But look at what the flag spends to get there.</p>
+  </div>
+  <div class="scroll">
+    <table>
+      <caption>Qwen3-0.6B, sweeping --stream-interval <span>Frames per token measured directly off the socket under 128-way concurrency.</span></caption>
+      <thead><tr><th>stream_interval</th><th>Path</th><th>tok/s</th><th>µs/tok</th><th>FE cores</th><th>frames / token</th></tr></thead>
+      <tbody>
+        <tr><td>1 (default)</td><td class="nm">model</td><td>32,446</td><td>31.02</td><td>1.007</td><td>0.741</td></tr>
+        <tr><td>1</td><td>template</td><td class="up">43,348</td><td class="up">21.74</td><td>0.942</td><td class="up">0.983</td></tr>
+        <tr class="sep"><td>2</td><td class="nm">model</td><td>43,599</td><td>19.76</td><td>0.861</td><td>0.499</td></tr>
+        <tr><td>2</td><td>template</td><td>43,480</td><td class="up">15.30</td><td>0.665</td><td>0.495</td></tr>
+        <tr class="sep"><td>4</td><td class="nm">model</td><td>43,760</td><td>14.28</td><td>0.625</td><td>0.254</td></tr>
+        <tr><td>4</td><td>template</td><td>43,932</td><td class="up">11.87</td><td>0.521</td><td>0.254</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note warn">
+    <p><strong>The flag buys throughput by coarsening the stream; the template does not.</strong> At <code>stream_interval=2</code> clients receive deltas in pairs (0.499 frames/token), at 4 in quads. The template reaches the same throughput while delivering 0.983 frames per token. The two compose: on top of <code>stream_interval=2</code> it still cuts frontend CPU 22.6%, and 16.9% at 4.</p>
+  </div>
+  <div class="prose">
+    <p>There is a second finding hiding in that column. At the default <code>stream_interval=1</code> the stock server does not actually deliver one frame per token under load — it delivers <strong>0.741</strong>. Its own serialization backlog delays delivery, so vLLM merges undelivered deltas. The stock server is silently coarsening streams that the operator asked to be per-token; the template is what makes <code>stream_interval=1</code> mean what it says.</p>
+  </div>
+</section>
 
-  <section>
-    <div class="head"><span class="n">TABLE 2</span><h2>Throughput with no pinning at all</h2></div>
-    <div class="scroll">
-      <table>
-        <caption>Phase B <span>Ordinary flags, 256 concurrency, nothing pinned — the configuration a normal deployment runs.</span></caption>
-        <thead>
-          <tr><th>Arm</th><th>Render path</th><th>Output tok/s</th><th>FE µs/token</th><th>FE cores</th><th>Mean TPOT</th><th>p99 TPOT</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>b1_m0</td><td class="name-base">model</td><td>32,903</td><td>30.62</td><td>1.008</td><td>7.06 ms</td><td>7.87 ms</td></tr>
-          <tr><td>b3_m0</td><td class="name-base">model</td><td>33,042</td><td>30.46</td><td>1.006</td><td>7.23 ms</td><td>7.65 ms</td></tr>
-          <tr><td>b2_m2</td><td>template, derived</td><td>43,201</td><td>21.72</td><td>0.938</td><td>5.43 ms</td><td>5.63 ms</td></tr>
-          <tr><td>b4_m2</td><td>template, derived</td><td>43,357</td><td>21.35</td><td>0.925</td><td>5.42 ms</td><td>5.57 ms</td></tr>
-          <tr class="median"><td>median</td><td class="name-base">model</td><td>32,972</td><td>30.54</td><td>1.007</td><td>7.15 ms</td><td>7.76 ms</td></tr>
-          <tr class="median"><td>median</td><td>template, derived</td><td class="up">43,279 &nbsp;+31.3%</td><td class="up">21.54 &nbsp;−29.5%</td><td>0.932</td><td class="up">5.43 ms</td><td class="up">5.60 ms</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div class="note">
-      <p><strong>+31.3% is a floor, not a ceiling.</strong> In these arms the patched frontend drops to 0.93 cores — it is no longer saturated, so something else now caps the run. Its own capacity rose from 32.7k to 46.4k tok/s (+42%); the benchmark simply stopped asking for more.</p>
-    </div>
-  </section>
+<section>
+  <div class="head"><span class="n">CONTROLS</span><h2>What was checked, and what was wrong</h2></div>
+  <ul>
+    <li><strong>The baseline is honest.</strong> The pristine unpatched file gives 33,968 tok/s / 29.70 µs; the patched file with the fast path disabled gives 33,859 / 29.78 — 0.3% apart. The added branch costs nothing, so the A/B measured the intended thing.</li>
+    <li><strong>Every arm ran byte-identical code on disk</strong>, with an environment variable selecting the path at import, so arms never differed by bytes.</li>
+    <li><strong>Correction — nothing was ever CPU-pinned.</strong> An earlier version of this report described a "frontend pinned to one core" arm. The container's cpuset is <code>10,12,…,104</code>; <code>taskset -c 0</code> failed with <code>EINVAL</code> in every arm and the failure was not checked. All arms ran unpinned. The conclusion survives and is stronger for it: the frontend drew ≈1.01 cores <em>with 32 available</em>, which is the direct evidence that one process cannot exceed one core.</li>
+    <li><strong>The CPU window was audited and is clean.</strong> The idle draw of the frontend, measured over 5 s before each run, is 0.000 cores, so the wider CPU-collection window contributes nothing to the per-token figures.</li>
+  </ul>
+</section>
 
-  <section>
-    <div class="head"><span class="n">TABLE 3</span><h2>Where the microseconds went</h2></div>
-    <div class="scroll">
-      <table>
-        <caption>Per-frame render cost <span>Measured against the image's own protocol models: Python 3.12.3, pydantic 2.13.4, 8-token delta.</span></caption>
-        <thead>
-          <tr><th>Path</th><th>µs / frame</th><th>vs. baseline</th></tr>
-        </thead>
-        <tbody>
-          <tr><td class="name-base">construct + model_dump_json</td><td>7.50</td><td class="flat">—</td></tr>
-          <tr><td>template, hardcoded</td><td>0.85</td><td class="up">−89%</td></tr>
-          <tr><td>template, derived from serializer</td><td>0.82</td><td class="up">−89%</td></tr>
-          <tr><td class="flat">template derivation, once per request</td><td class="flat">8.46</td><td class="flat">amortized ≈0.02 µs/frame</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div class="prose">
-      <p>Model construction, not serialization, is the bulk of the baseline — 4.2 of the 7.5 µs. Swapping in a faster JSON encoder would recover about a third of what skipping construction recovers.</p>
-    </div>
-  </section>
-
-  <section>
-    <div class="head"><span class="n">CORRECTNESS</span><h2>Byte-identical on the wire</h2></div>
-    <div class="prose">
-      <p>Every arm captured raw SSE bytes off the socket for the same greedy request set. After normalising the two fields that are per-request by definition — <code>id</code> and <code>created</code> — all eleven arms across all three render paths hash to a single digest over 150 frames.</p>
-    </div>
-    <pre><code>1b901c44fdf95379  ← a1_m0 a1_m1 a1_m2 a2_m0 a2_m1 a2_m2
-                     b1_m0 b2_m2 b3_m0 b4_m2 smoke
+<section>
+  <div class="head"><span class="n">CORRECTNESS</span><h2>Byte-identical, with one honest asterisk</h2></div>
+  <div class="prose">
+    <p>Raw SSE bytes were captured off the socket for a fixed greedy request set in every arm. Normalising only the two per-request fields (<code>id</code>, <code>created</code>), all arms of a model hash to one digest — including the pristine unpatched server, which produces the same digest as the fast path:</p>
+  </div>
+  <pre><code>1b901c44fdf95379  ctrl_pristine.sse  ctrl_mode0.sse  ctrl_mode2.sse
+                  + all 11 Qwen3-0.6B arms, 150 frames
 DISTINCT STREAMS: 1</code></pre>
-    <div class="prose">
-      <p>The derived variant earns this structurally rather than by assertion: it renders one probe chunk through the real models and splits the result on sentinels, so a field added to <code>CompletionStreamResponse</code> is absorbed automatically instead of silently diverging from a hand-transcribed field list.</p>
-    </div>
-  </section>
+  <div class="prose">
+    <p>Seven of eight models reproduced a single digest across every arm. The eighth (SmolLM2-360M) produced two, and the difference was <em>not</em> serialization: both streams carried the same 48 tokens and the same totals, but one merged <code>" capital"</code> and <code>" of"</code> into a single frame. That is the coalescing above — a timing-dependent frame boundary, not a content difference. The precise claim is therefore: <strong>identical bytes for the frames the fast path emits</strong>, verified per model by sha256 over raw socket bytes.</p>
+    <p>The template is derived by dumping one probe chunk through the real response models and splitting on sentinels, so field order and formatting track the models automatically. What it cannot track is a <em>newly populated</em> per-chunk field, so the test freezes both models' field sets — adding a field fails CI loudly and forces the fast path to be revisited.</p>
+  </div>
+</section>
 
-  <section>
-    <div class="head"><span class="n">SCOPE</span><h2>What this does and does not claim</h2></div>
-    <ul>
-      <li>The ~8 µs/token saving is pure Python string work: it is independent of model and hardware. Whether it becomes <em>throughput</em> depends on the frontend being the constraint — on a large model at modest request rates, it returns CPU rather than tokens.</li>
-      <li><code>--api-server-count</code> defaults to <code>data_parallel_size</code>, so a single-frontend deployment — the configuration measured here — is the default for any non-DP server.</li>
-      <li>Only <code>/v1/completions</code> is covered. Chat completions has the same per-chunk envelope waste and is the busier endpoint; it is the obvious follow-up, not part of this measurement.</li>
-      <li>The fast path handles plain delta chunks only. Echo, logprobs, token ids, continuous usage and every terminal chunk keep the model path unchanged.</li>
-    </ul>
-  </section>
-
-  <section>
-    <div class="head"><span class="n">METHOD</span><h2>Protocol</h2></div>
-    <div class="prose">
-      <p>One patched file was installed for every arm, its behaviour selected at import time by an environment variable, so arms differ only by environment and never by bytes on disk. Arms were alternated to spread any drift across all three paths. Frontend CPU was read directly from <code>/proc/&lt;pid&gt;/stat</code> across the measured window; <code>--ignore-eos</code> fixed the token count per request so every arm streamed exactly the same number of frames.</p>
-    </div>
-    <pre><code>vllm serve Qwen/Qwen3-0.6B --api-server-count 1 --max-num-seqs 512
+<section>
+  <div class="head"><span class="n">METHOD</span><h2>Protocol</h2></div>
+  <div class="prose">
+    <p>Arms alternated, medians of two where repeated. <code>--ignore-eos</code> fixed output length so every arm streamed the same token count. Frontend CPU read from <code>/proc/&lt;pid&gt;/stat</code> (utime+stime) across the measured window.</p>
+  </div>
+  <pre><code>vllm serve &lt;model&gt; --api-server-count 1 --max-num-seqs 512 --max-model-len 2048
 vllm bench serve --dataset-name random --random-input-len 32 \
-  --random-output-len 512 --ignore-eos --num-prompts 4000 --max-concurrency 512</code></pre>
-    <div class="env">
-      <div><b>Cluster</b>CoreWeave waldorf</div>
-      <div><b>Node</b>1×H200, 32 cores</div>
-      <div><b>Image</b>vllm-openai:nightly</div>
-      <div><b>vLLM</b>0.27.2rc1.dev18+g3d204dfda</div>
-      <div><b>Python / pydantic</b>3.12.3 / 2.13.4</div>
-      <div><b>Model</b>Qwen/Qwen3-0.6B</div>
-      <div><b>stream_interval</b>1 (default)</div>
-      <div><b>Rust frontend</b>disabled</div>
-    </div>
-  </section>
+  --random-output-len 512 --ignore-eos --num-prompts 3000 --max-concurrency 256</code></pre>
+  <div class="env">
+    <div><b>Cluster</b>CoreWeave waldorf</div>
+    <div><b>Node</b>1×H200, 32 cores</div>
+    <div><b>Image</b>vllm-openai:nightly</div>
+    <div><b>vLLM</b>0.27.2rc1.dev18+g3d204dfda</div>
+    <div><b>Python / pydantic</b>3.12.3 / 2.13.4</div>
+    <div><b>api_server_count</b>1 (the non-DP default)</div>
+    <div><b>Rust frontend</b>disabled (default)</div>
+    <div><b>Arms</b>46 across 8 models</div>
+  </div>
+</section>
 
-  <footer>
-    Harness, raw per-arm results and wire captures: <code>sse-fastpath-validation/</code> on branch <code>sse-delta-frame-template</code>.<br>
-    Benchmarks were produced with AI assistance; every number here is reproducible with the committed harness.
-  </footer>
+<footer>
+  Harness, raw per-arm results and wire captures: <code>sse-fastpath-validation/</code> on branch <code>sse-template-v2</code>.<br>
+  Findings were adversarially audited before publication; the pinning error above was found that way. Benchmarks produced with AI assistance; every number is reproducible with the committed harness.
+</footer>
 
 </div>
