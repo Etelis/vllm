@@ -1,0 +1,20 @@
+{
+  "label": "smoke",
+  "mode": 2,
+  "pin": 1,
+  "conc": 128,
+  "nprompts": 200,
+  "output_throughput": 29444.23,
+  "total_throughput": null,
+  "req_throughput": 57.51,
+  "mean_tpot_ms": 3.28,
+  "p99_tpot_ms": 3.59,
+  "mean_itl_ms": 3.29,
+  "duration_s": 3.48,
+  "total_output_tokens": 102400.0,
+  "frontend_cpu_s": 2.24,
+  "engine_cpu_s": 0,
+  "wall_s": 12.82,
+  "frontend_us_per_token": 21.87,
+  "frontend_cpu_frac": 0.175
+}
