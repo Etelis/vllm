@@ -1050,3 +1050,85 @@ def test_fs_tier_cross_tp_round_trip(tmp_path):
         assert torch.allclose(reader_tensor[1], expected)
     finally:
         reader.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Fan-out degree
+# ---------------------------------------------------------------------------
+
+_MIB = 2**20
+
+
+def _degree(pool, n_tasks, jobs_in_flight, n_threads=16):
+    with pool._condition:
+        pool._inflight_jobs = jobs_in_flight
+        return pool._fanout_degree(n_tasks, n_threads)
+
+
+def test_large_blocks_are_never_split():
+    """One block already carries more than the target, so it saturates the
+    device on its own and a second concurrent read buys nothing."""
+    pool = DualQueueThreadPool(
+        n_read_threads=16,
+        n_write_threads=16,
+        block_bytes=36 * _MIB,
+        fanout_target_bytes=32 * _MIB,
+    )
+    try:
+        assert _degree(pool, n_tasks=14, jobs_in_flight=1) == 1
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_small_blocks_fan_out_when_alone():
+    """Small blocks leave the device idle between reads, so a lone job should
+    spread itself across threads."""
+    pool = DualQueueThreadPool(
+        n_read_threads=16,
+        n_write_threads=16,
+        block_bytes=576 * 1024,
+        fanout_target_bytes=32 * _MIB,
+    )
+    try:
+        assert _degree(pool, n_tasks=896, jobs_in_flight=1) == 16
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_fanout_shrinks_as_jobs_accumulate():
+    """The budget is shared over the jobs in flight, so every concurrent job is
+    split the same way and the aggregate stays near the device's need."""
+    pool = DualQueueThreadPool(
+        n_read_threads=16,
+        n_write_threads=16,
+        block_bytes=576 * 1024,
+        fanout_target_bytes=32 * _MIB,
+    )
+    try:
+        assert _degree(pool, 896, jobs_in_flight=4) == 8
+        assert _degree(pool, 896, jobs_in_flight=8) == 4
+        assert _degree(pool, 896, jobs_in_flight=64) == 1
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_fanout_never_exceeds_task_count():
+    pool = DualQueueThreadPool(
+        n_read_threads=16,
+        n_write_threads=16,
+        block_bytes=64 * 1024,
+        fanout_target_bytes=32 * _MIB,
+    )
+    try:
+        assert _degree(pool, n_tasks=3, jobs_in_flight=1) == 3
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_unknown_block_size_splits_across_all_threads():
+    """block_bytes is optional; without it the pool splits as it did before."""
+    pool = DualQueueThreadPool(n_read_threads=8, n_write_threads=8)
+    try:
+        assert _degree(pool, n_tasks=100, jobs_in_flight=1, n_threads=8) == 8
+    finally:
+        pool.shutdown(wait=True)

@@ -197,6 +197,7 @@ class FileSystemTierManager(SecondaryTierManager):
             n_read_threads,
             n_write_threads,
             thread_name_prefix="vllm_kv_py_fs",
+            block_bytes=self._block_size,
         )
 
         self._lookup_manager = FsAsyncLookupManager(tier=self, tier_type=self.tier_type)
