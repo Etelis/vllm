@@ -111,6 +111,9 @@ def _make_manager() -> P2PSecondaryTierManager:
     mgr._kv_to_session = {}
     mgr._unbound_stores = {}
     mgr._failed_serve_ctxs = []
+    mgr._lookup_timeouts = 0
+    mgr._peer_reaps = 0
+    mgr._reconnects = 0
     return mgr
 
 

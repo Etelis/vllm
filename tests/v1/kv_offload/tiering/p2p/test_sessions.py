@@ -189,11 +189,18 @@ class FakeConnection:
         self._closed = True
 
 
+# Epoch the fake peer stamps on its first ConnectMsg. A second ConnectMsg
+# carrying this same value is a repeat of a completed handshake; a different
+# value means the peer rebuilt its session.
+_PEER_EPOCH = "peer-epoch-1"
+
+
 def _peer_connect_msg(
     peer_id: str = "peer:8000",
     block_len: int = 4096,
     fingerprint: str | None = None,
     hash_seed: str = _DEFAULT_HASH_SEED,
+    epoch: str | None = _PEER_EPOCH,
 ) -> dict:
     """Build a ConnectMsg as if the peer sent it."""
     msg = {
@@ -207,6 +214,8 @@ def _peer_connect_msg(
     }
     if fingerprint is not None:
         msg[ConnectMsg.CONFIG_FINGERPRINT] = fingerprint
+    if epoch is not None:
+        msg[ConnectMsg.EPOCH] = epoch
     return msg
 
 
@@ -2526,3 +2535,206 @@ class TestTransferDoneMsgValidation:
         }
         with pytest.raises(ValueError, match="success"):
             TransferDoneMsg.validate(msg)
+
+
+class TestLookupDeadline:
+    """A registered lookup must reach a verdict, even from a silent peer.
+
+    An unanswered probe answers RETRY, and RETRY defers the request in the
+    scheduler without ever starting a load — so no load timeout applies to
+    it. Without a deadline of its own, a peer that stops answering parks the
+    request until the HTTP client disconnects.
+    """
+
+    def _register(self, session: P2PSession, key: bytes = b"k" * 32) -> None:
+        session.register_lookup("req-1", key)
+        session.flush_pending_lookups()
+
+    def _expire(self, session: P2PSession, req_id: str = "req-1") -> None:
+        """Backdate the request's unresolved streak past the deadline."""
+        session._client._requests[req_id].unresolved_since = (
+            time.monotonic() - session._client._lookup_timeout_s - 1.0
+        )
+
+    def test_unanswered_lookup_resolves_to_miss(self):
+        session, conn, _ = _make_session()
+        _activate(session, conn)
+        self._register(session)
+        assert session.register_lookup("req-1", b"k" * 32) is None
+
+        self._expire(session)
+        result = session.poll()
+
+        assert result.expired_lookups == 1
+        assert session.register_lookup("req-1", b"k" * 32) is False
+
+    def test_answered_lookup_is_not_expired(self):
+        session, conn, _ = _make_session()
+        _activate(session, conn)
+        self._register(session)
+        conn.enqueue(
+            {
+                TYPE_KEY: LookupRespMsg.TYPE,
+                LookupRespMsg.KV_REQUEST_ID: "req-1",
+                LookupRespMsg.KEYS: [b"k" * 32],
+                LookupRespMsg.HITS: [True],
+            }
+        )
+        session.poll()
+
+        # Answering cleared the deadline rather than merely stopping its
+        # clock, so there is nothing left for a later tick to expire.
+        assert session._client._requests["req-1"].unresolved_since is None
+        assert session.poll().expired_lookups == 0
+        assert session.register_lookup("req-1", b"k" * 32) is True
+
+    def test_deadline_restarts_after_each_answer(self):
+        """A later probe gets a full budget, not the earlier probe's leftovers.
+
+        A request's blocks are discovered over several scheduler steps. If the
+        deadline ran from the first probe ever registered, a long prompt whose
+        peer answers promptly would still expire part-way through.
+        """
+        session, conn, _ = _make_session()
+        _activate(session, conn)
+        self._register(session, key=b"a" * 32)
+        # The first probe is already past the deadline when its answer lands.
+        self._expire(session)
+
+        conn.enqueue(
+            {
+                TYPE_KEY: LookupRespMsg.TYPE,
+                LookupRespMsg.KV_REQUEST_ID: "req-1",
+                LookupRespMsg.KEYS: [b"a" * 32],
+                LookupRespMsg.HITS: [True],
+            }
+        )
+        session.poll()
+        self._register(session, key=b"b" * 32)
+
+        assert session.poll().expired_lookups == 0
+        assert session.register_lookup("req-1", b"b" * 32) is None
+
+    def test_expiry_drops_a_session_that_never_handshook(self):
+        """The deaf-reconnect state: connected, unacked, silently mute.
+
+        Nothing it queues can leave and no answer it receives can be matched
+        to a completed handshake, so the session is broken rather than slow
+        and must be dropped for the manager to reap and re-open.
+        """
+        session, conn, _ = _make_session()
+        assert session.ready is False
+        self._register(session)
+        self._expire(session)
+
+        session.poll()
+
+        assert conn.alive is False
+
+    def test_expiry_keeps_a_handshaken_session(self):
+        """A ready session that answers late is slow, not deaf.
+
+        Tearing it down would turn a transient stall — including one in our
+        own scheduler thread, which expires lookups without un-completing any
+        handshake — into a peer outage.
+        """
+        session, conn, _ = _make_session()
+        _activate(session, conn)
+        self._register(session)
+        self._expire(session)
+
+        assert session.poll().expired_lookups == 1
+        assert conn.alive is True
+
+    def test_timeout_of_zero_disables_the_deadline(self):
+        session, conn, _ = _make_session()
+        _activate(session, conn)
+        session._client._lookup_timeout_s = 0.0
+        self._register(session)
+        session._client._requests["req-1"].unresolved_since = time.monotonic() - 3600.0
+
+        assert session.poll().expired_lookups == 0
+        assert session.register_lookup("req-1", b"k" * 32) is None
+
+
+class TestPeerReconnect:
+    """A peer that re-opens its session must be able to talk to us again.
+
+    Its address is unchanged across a reconnect, so only the ConnectMsg epoch
+    distinguishes a rebuilt session from a repeated one. Rejecting a rebuilt
+    session leaves the peer permanently mute: it announces itself exactly
+    once and nothing retransmits that message.
+    """
+
+    def test_new_epoch_redoes_the_handshake(self):
+        session, conn, transport = _make_session()
+        _activate(session, conn)
+        assert session.ready is True
+        before = len(conn._sent)
+
+        conn.enqueue(_peer_connect_msg(epoch="peer-epoch-2"))
+        session.poll()
+
+        assert conn.alive is True
+        # Our own announcement precedes the ack, the order a first handshake
+        # arrives in; acking first makes both sides answer each other forever.
+        assert [m[TYPE_KEY] for m in conn._sent[before:]] == [
+            ConnectMsg.TYPE,
+            ConnectAckMsg.TYPE,
+        ]
+        assert "peer:8000" in transport._remote_peers
+
+    def test_new_epoch_reports_the_voided_work(self):
+        """State addressed to the peer's previous session can never complete."""
+        session, conn, _ = _make_session()
+        _activate(session, conn)
+        session.register_lookup("req-1", b"k" * 32)
+        session.flush_pending_lookups()
+
+        conn.enqueue(_peer_connect_msg(epoch="peer-epoch-2"))
+        result = session.poll()
+
+        assert result.reset is not None
+        assert result.reset.failed_req_ids == ["req-1"]
+
+    def test_new_epoch_regates_sends_until_acked_again(self):
+        session, conn, _ = _make_session()
+        _activate(session, conn)
+        conn.enqueue(_peer_connect_msg(epoch="peer-epoch-2"))
+        session.poll()
+        before = len(conn._sent)
+
+        session.register_lookup("req-2", b"k" * 32)
+        session.flush_pending_lookups()
+        assert conn._sent[before:] == []
+
+        conn.enqueue({TYPE_KEY: ConnectAckMsg.TYPE, ConnectAckMsg.PEER_ID: "peer:8000"})
+        session.poll()
+
+        assert [m[TYPE_KEY] for m in conn._sent[before:]] == [LookupMsg.TYPE]
+
+    def test_repeated_epoch_is_still_a_protocol_error(self):
+        """A repeat of a handshake we completed says nothing was rebuilt."""
+        session, conn, _ = _make_session()
+        _activate(session, conn)
+
+        conn.enqueue(_peer_connect_msg(epoch=_PEER_EPOCH))
+        session.poll()
+
+        assert conn.alive is False
+
+    def test_connect_without_an_epoch_is_still_a_protocol_error(self):
+        """A peer too old to name its session cannot be told apart."""
+        session, conn, _ = _make_session()
+        _activate(session, conn)
+
+        conn.enqueue(_peer_connect_msg(epoch=None))
+        session.poll()
+
+        assert conn.alive is False
+
+    def test_our_connect_carries_an_epoch(self):
+        _, conn, _ = _make_session()
+        sent = [m for m in conn._sent if m[TYPE_KEY] == ConnectMsg.TYPE]
+        assert len(sent) == 1
+        assert isinstance(sent[0][ConnectMsg.EPOCH], str)

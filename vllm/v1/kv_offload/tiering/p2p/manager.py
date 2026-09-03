@@ -18,9 +18,15 @@ from typing import TYPE_CHECKING, Any
 from typing_extensions import override
 
 import vllm.envs as envs
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading.metrics import (
+    OffloadingConnectorStats,
+)
 from vllm.logger import init_logger
 from vllm.v1.kv_offload.base import (
     LookupResult,
+    OffloadingCounterMetadata,
+    OffloadingGaugeMetadata,
+    OffloadingMetricMetadata,
     OffloadKey,
     ReqContext,
     RequestOffloadingContext,
@@ -34,7 +40,7 @@ from vllm.v1.kv_offload.tiering.base import (
 )
 from vllm.v1.kv_offload.tiering.p2p.control import ControlTransport, ZmqTransport
 from vllm.v1.kv_offload.tiering.p2p.data import DataTransport, NixlTransport
-from vllm.v1.kv_offload.tiering.p2p.session import P2PSession
+from vllm.v1.kv_offload.tiering.p2p.session import P2PSession, SessionCloseResult
 
 if TYPE_CHECKING:
     from vllm.v1.kv_offload.base import OffloadingSpec
@@ -42,6 +48,26 @@ if TYPE_CHECKING:
     from vllm.v1.kv_offload.tiering.p2p.control.base import ControlConnection
 
 logger = init_logger(__name__)
+
+
+class P2PMetrics:
+    """Prometheus metric names emitted by the P2P secondary tier.
+
+    Together these separate a slow peer from a deaf one, which is the
+    distinction the control plane cannot make from a log line: pending
+    lookups and their age say whether answers are arriving at all,
+    handshaking sessions say whether the control session ever completed,
+    and the timeout/reap/reconnect counters say how often it had to be
+    rebuilt.
+    """
+
+    LOOKUP_TIMEOUTS = "vllm:kv_offload_p2p_lookup_timeouts"
+    PENDING_LOOKUPS = "vllm:kv_offload_p2p_pending_lookups"
+    OLDEST_PENDING_LOOKUP = "vllm:kv_offload_p2p_oldest_pending_lookup_seconds"
+    PEER_REAPS = "vllm:kv_offload_p2p_peer_reaps"
+    RECONNECTS = "vllm:kv_offload_p2p_reconnects"
+    SESSIONS_HANDSHAKING = "vllm:kv_offload_p2p_sessions_handshaking"
+
 
 # Reap unbound store batches that have been parked without a FetchMsg
 # binding them to a session for longer than this. Protects against the
@@ -321,9 +347,88 @@ class P2PSecondaryTierManager(SecondaryTierManager):
         # handle is valid.
         self._failed_serve_ctxs: list[ReqContext] = []
 
+        # Counter deltas since the last get_stats(); reset when reported.
+        self._lookup_timeouts = 0
+        self._peer_reaps = 0
+        self._reconnects = 0
+
     # ------------------------------------------------------------------
     # SecondaryTierManager interface
     # ------------------------------------------------------------------
+
+    @classmethod
+    @override
+    def build_metric_definitions(
+        cls, extra_config: dict[str, Any]
+    ) -> dict[str, OffloadingMetricMetadata]:
+        return {
+            P2PMetrics.LOOKUP_TIMEOUTS: OffloadingCounterMetadata(
+                documentation=(
+                    "Number of P2P block lookups given up on because the peer "
+                    "did not answer within VLLM_P2P_LOOKUP_TIMEOUT_S. Each one "
+                    "is recomputed locally instead."
+                ),
+            ),
+            P2PMetrics.PENDING_LOOKUPS: OffloadingGaugeMetadata(
+                documentation=(
+                    "P2P block lookups sent to peers and still unanswered. "
+                    "Requests holding one are deferred by the scheduler, so a "
+                    "sustained non-zero value means prefill is waiting on peers."
+                ),
+            ),
+            P2PMetrics.OLDEST_PENDING_LOOKUP: OffloadingGaugeMetadata(
+                documentation=(
+                    "Age in seconds of the longest-waiting unanswered P2P "
+                    "lookup. Healthy peers answer in a few seconds; a value "
+                    "approaching the lookup timeout means a peer has gone deaf."
+                ),
+            ),
+            P2PMetrics.PEER_REAPS: OffloadingCounterMetadata(
+                documentation=(
+                    "Number of P2P peer sessions torn down after the control "
+                    "connection died."
+                ),
+            ),
+            P2PMetrics.RECONNECTS: OffloadingCounterMetadata(
+                documentation=(
+                    "Number of times a peer re-opened its session and the "
+                    "handshake was redone in place."
+                ),
+            ),
+            P2PMetrics.SESSIONS_HANDSHAKING: OffloadingGaugeMetadata(
+                documentation=(
+                    "P2P sessions with a live connection whose handshake has "
+                    "not completed. Anything but a brief transient means peers "
+                    "are connected but unable to exchange messages."
+                ),
+            ),
+        }
+
+    @override
+    def get_stats(self) -> OffloadingConnectorStats | None:
+        stats = OffloadingConnectorStats()
+
+        pending = 0
+        oldest_age = 0.0
+        handshaking = 0
+        for session in self._sessions.values():
+            if session.connected and not session.ready:
+                handshaking += 1
+            backlog = session.lookup_backlog()
+            pending += backlog.pending
+            oldest_age = max(oldest_age, backlog.oldest_age_s)
+
+        stats.set_gauge(P2PMetrics.PENDING_LOOKUPS, pending)
+        stats.set_gauge(P2PMetrics.OLDEST_PENDING_LOOKUP, oldest_age)
+        stats.set_gauge(P2PMetrics.SESSIONS_HANDSHAKING, handshaking)
+
+        stats.increase_counter(P2PMetrics.LOOKUP_TIMEOUTS, self._lookup_timeouts)
+        stats.increase_counter(P2PMetrics.PEER_REAPS, self._peer_reaps)
+        stats.increase_counter(P2PMetrics.RECONNECTS, self._reconnects)
+        self._lookup_timeouts = 0
+        self._peer_reaps = 0
+        self._reconnects = 0
+        return stats
 
     @override
     def lookup(self, key: OffloadKey, req_context: ReqContext) -> LookupResult:
@@ -655,6 +760,36 @@ class P2PSecondaryTierManager(SecondaryTierManager):
                 logger.error("P2P %s: rejecting peer: %s", self._local_id, exc)
                 conn.close()
 
+    def _apply_session_failures(
+        self, session: P2PSession, close_result: SessionCloseResult
+    ) -> None:
+        """Fail the work a session's state can no longer complete.
+
+        Shared by the two ways that state dies: the peer being reaped, and
+        the peer re-opening its session under us. Either way the
+        kv_request_id → session bindings are void, in-flight jobs must be
+        reported failed, and consumer-side requests must stop deferring on
+        answers that can no longer arrive.
+        """
+        # Purge kv_request_id → session entries pointing at this session so
+        # subsequent submit_stores fall back to the unbound path (which times
+        # out into failure if no peer rebinds).
+        stale_kv_ids = [kid for kid, s in self._kv_to_session.items() if s is session]
+        for kid in stale_kv_ids:
+            del self._kv_to_session[kid]
+        for job_id in close_result.failed_jobs:
+            self._finished_jobs.append(JobResult(job_id=job_id, success=False))
+        for job_id in close_result.failed_stores:
+            self._finished_jobs.append(JobResult(job_id=job_id, success=False))
+        # Fail every client-side request (in-flight loads plus unresolved
+        # symmetric-P2P probes) so lookup() returns MISS (local prefill)
+        # instead of RETRY forever — even if a fresh session to the same peer
+        # is later opened by another request.
+        self._failed_req_ids.update(close_result.failed_req_ids)
+        # Release the TieringManager's per-request bookkeeping for the dead
+        # state's synthetic lookups on the next serve_external_requests.
+        self._failed_serve_ctxs.extend(close_result.failed_serves)
+
     def _reap_dead_sessions(self) -> None:
         # Reap connected sessions whose connection died — peer is gone.
         # Stranded prefiller-side stores are no longer tracked through a
@@ -670,28 +805,9 @@ class P2PSecondaryTierManager(SecondaryTierManager):
             return
         for pid in dead:
             session = self._sessions.pop(pid)
-            # Purge any kv_request_id → session entries pointing at this
-            # session so subsequent submit_stores fall back to the unbound
-            # path (which will time out into failure if no peer rebinds).
-            stale_kv_ids = [
-                kid for kid, s in self._kv_to_session.items() if s is session
-            ]
-            for kid in stale_kv_ids:
-                del self._kv_to_session[kid]
-            close_result = session.close()
-            for job_id in close_result.failed_jobs:
-                self._finished_jobs.append(JobResult(job_id=job_id, success=False))
-            for job_id in close_result.failed_stores:
-                self._finished_jobs.append(JobResult(job_id=job_id, success=False))
-            # Fail every client-side request (in-flight loads plus unresolved
-            # symmetric-P2P probes) toward the dead peer so lookup() returns
-            # MISS (local prefill) instead of RETRY forever — even if a fresh
-            # session to the same peer is later opened by another request.
-            self._failed_req_ids.update(close_result.failed_req_ids)
-            # Release the TieringManager's per-request bookkeeping for the
-            # dead session's synthetic lookups on the next serve_external_requests.
-            self._failed_serve_ctxs.extend(close_result.failed_serves)
+            self._apply_session_failures(session, session.close())
             self._data.remove_remote_peer(pid)
+            self._peer_reaps += 1
             logger.warning("P2P %s: peer %s down", self._local_id, pid)
 
     def _reap_unbound_stores(self) -> None:
@@ -754,6 +870,12 @@ class P2PSecondaryTierManager(SecondaryTierManager):
 
         for session in self._sessions.values():
             result = session.poll()
+            self._lookup_timeouts += result.expired_lookups
+            if result.reset is not None:
+                # The peer rebuilt its session mid-flight; everything the old
+                # one was carrying is void even though the session lives on.
+                self._reconnects += 1
+                self._apply_session_failures(session, result.reset)
             for lr in result.loads:
                 self._finished_jobs.append(
                     JobResult(job_id=lr.job_id, success=lr.success)

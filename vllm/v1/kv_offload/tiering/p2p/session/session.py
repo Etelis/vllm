@@ -19,13 +19,18 @@ received our ConnectMsg, after which queued outgoing messages are flushed.
 from __future__ import annotations
 
 import contextlib
+import uuid
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, NamedTuple
 
 from vllm.logger import init_logger
 from vllm.v1.kv_offload.base import OffloadKey
 from vllm.v1.kv_offload.tiering.p2p.control.base import ControlConnection
-from vllm.v1.kv_offload.tiering.p2p.session.client import ClientRole, LoadResult
+from vllm.v1.kv_offload.tiering.p2p.session.client import (
+    ClientRole,
+    LoadResult,
+    LookupBacklog,
+)
 from vllm.v1.kv_offload.tiering.p2p.session.protocol import (
     TYPE_KEY,
     AbortAckMsg,
@@ -72,6 +77,12 @@ class SessionPollResult(NamedTuple):
     loads: list[LoadResult]
     stores: list[StoreResult]
     new_fetch_ids: list[str]
+    # Set when the peer re-opened its session this tick: the work its
+    # previous session was carrying, in the same shape a teardown produces,
+    # so the manager can fail it through one code path.
+    reset: SessionCloseResult | None = None
+    # Probes the lookup deadline gave up on this tick.
+    expired_lookups: int = 0
 
 
 class SessionCloseResult(NamedTuple):
@@ -126,6 +137,17 @@ class P2PSession:
         # Msgs waiting to be sent on connection establishment
         self._queued: list[dict] = []
 
+        # Nonce identifying this session instance on the wire, and the last
+        # one seen from the peer. A peer's address survives a reconnect, so
+        # the epoch is the only thing that distinguishes a peer that rebuilt
+        # its session from one repeating itself.
+        self._epoch = uuid.uuid4().hex
+        self._peer_epoch: str | None = None
+        # Cumulative count of peer-driven re-handshakes, for metrics.
+        self._reconnects = 0
+        # Work voided by a re-handshake, awaiting the poll() that reports it.
+        self._pending_reset: SessionCloseResult | None = None
+
         # Consecutive non-protocol dispatch errors. Reset on success.
         self._dispatch_error_count: int = 0
 
@@ -163,6 +185,20 @@ class P2PSession:
     def ready(self) -> bool:
         """True after the peer acked our ConnectMsg (we may send freely)."""
         return self._send_ready
+
+    @property
+    def reconnects(self) -> int:
+        """Cumulative re-handshakes driven by this peer re-opening."""
+        return self._reconnects
+
+    @property
+    def timed_out_lookups(self) -> int:
+        """Cumulative probes toward this peer given up on by the deadline."""
+        return self._client.timed_out_lookups
+
+    def lookup_backlog(self) -> LookupBacklog:
+        """Unanswered-probe snapshot for this peer."""
+        return self._client.lookup_backlog()
 
     @property
     def has_pending_work(self) -> bool:
@@ -260,6 +296,27 @@ class P2PSession:
 
         for msg in self._conn.recv():
             self._on_message(msg)
+        # Set by _reset_for_reconnect during the dispatch above, if the peer
+        # re-opened its session this tick.
+        reset = self._pending_reset
+        self._pending_reset = None
+
+        expired = self._client.expire_stale_lookups()
+        if expired and not self._send_ready:
+            # The peer never acked our ConnectMsg, so every message we hold
+            # for it is still queued and no answer it sends can be matched to
+            # a completed handshake. That is a broken control session rather
+            # than a slow one: drop it so the manager reaps it and the next
+            # request re-handshakes from scratch. A session that *is* ready
+            # may simply be slow, and tearing that one down would turn a
+            # transient stall into a peer outage.
+            logger.warning(
+                "P2PSession %s: handshake still incomplete after %d expired "
+                "lookup(s) — dropping the session",
+                self.peer_id,
+                expired,
+            )
+            self._conn.mark_dead()
 
         loads = self._client.collect_results()
         stores = self._server.collect_results()
@@ -268,7 +325,11 @@ class P2PSession:
         new_fetch_ids = self._new_fetch_ids
         self._new_fetch_ids = []
         return SessionPollResult(
-            loads=loads, stores=stores, new_fetch_ids=new_fetch_ids
+            loads=loads,
+            stores=stores,
+            new_fetch_ids=new_fetch_ids,
+            reset=reset,
+            expired_lookups=expired,
         )
 
     def close(self) -> SessionCloseResult:
@@ -423,16 +484,80 @@ class P2PSession:
     # Handshake
     # ------------------------------------------------------------------
 
+    def _reset_for_reconnect(self, peer_epoch: str) -> None:
+        """Rebuild per-peer state for a peer that re-opened its session.
+
+        Everything in flight was addressed to the peer's previous session and
+        can no longer complete, so it is collected in the same shape a
+        teardown produces and reported by the next ``poll()``; the manager
+        fails it through one code path either way. The connection itself
+        stays up — the handshake resumes on it immediately, which is the
+        whole point of not tearing the session down.
+        """
+        logger.warning(
+            "P2PSession %s: peer re-opened its session (epoch %s -> %s) — "
+            "re-handshaking",
+            self.peer_id,
+            self._peer_epoch,
+            peer_epoch,
+        )
+        client_result = self._client.close()
+        failed_stores, failed_serves = self._server.close()
+        self._transport.remove_remote_peer(self.peer_id)
+
+        reset = SessionCloseResult(
+            failed_jobs=client_result.failed_jobs,
+            failed_req_ids=client_result.failed_req_ids,
+            failed_stores=failed_stores,
+            failed_serves=failed_serves,
+        )
+        # A second reconnect inside one poll batch merges into the first, so
+        # no voided work is lost between here and the poll() that reports it.
+        if self._pending_reset is None:
+            self._pending_reset = reset
+        else:
+            prev = self._pending_reset
+            self._pending_reset = SessionCloseResult(
+                failed_jobs=prev.failed_jobs + reset.failed_jobs,
+                failed_req_ids=prev.failed_req_ids + reset.failed_req_ids,
+                failed_stores=prev.failed_stores + reset.failed_stores,
+                failed_serves=prev.failed_serves + reset.failed_serves,
+            )
+
+        self._client = ClientRole(peer_id=self.peer_id, send=self._send)
+        self._server = ServerRole(
+            peer_id=self.peer_id,
+            transport=self._transport,
+            send=self._send,
+        )
+        self._send_ready = False
+        self._queued.clear()
+        self._new_fetch_ids.clear()
+        self._reconnects += 1
+        # Announce ourselves before acking, so the peer's fresh session sees
+        # connect-then-ack — the order a first handshake arrives in. Acking
+        # first makes both sides answer each other's connects forever.
+        self._send_connect()
+
     def _on_connect(self, msg: dict) -> None:
         # Validation failures here mean an incompatible or malicious peer.
         # Mark the connection dead so the manager reaps the session;
         # don't call add_remote_peer or send connect_ack.
+        peer_epoch = msg.get(ConnectMsg.EPOCH)
         if self._send_ready:
-            # We've already received connect_ack, so the handshake is
-            # complete. A second connect from the peer is a protocol
-            # violation — re-registering would corrupt transport state.
-            self._protocol_error("duplicate connect after handshake")
-            return
+            if peer_epoch is None or peer_epoch == self._peer_epoch:
+                # Either a peer too old to name its session, or a repeat of
+                # the handshake we already completed. Neither says the peer
+                # rebuilt its side, and re-registering would corrupt
+                # transport state.
+                self._protocol_error("duplicate connect after handshake")
+                return
+            # An epoch we haven't seen means the peer replaced its session:
+            # its state, including the ack it owes us, is gone. Rebuild ours
+            # and redo the handshake. Rejecting it instead would leave the
+            # peer permanently unable to talk to us — its ConnectMsg is sent
+            # once and nothing retransmits it.
+            self._reset_for_reconnect(peer_epoch)
         try:
             ConnectMsg.validate(msg)
             if msg[ConnectMsg.BLOCK_LEN] != self._local_block_len:
@@ -467,6 +592,7 @@ class P2PSession:
                 self._conn.mark_dead()
             return
 
+        self._peer_epoch = peer_epoch
         if self._conn is not None:
             self._conn.send(
                 {
@@ -504,6 +630,7 @@ class P2PSession:
                 ConnectMsg.BLOCK_LEN: self._transport.block_len,
                 ConnectMsg.CONFIG_FINGERPRINT: self._transport.config_fingerprint,
                 ConnectMsg.HASH_SEED: self._local_hash_seed,
+                ConnectMsg.EPOCH: self._epoch,
             }
         )
 

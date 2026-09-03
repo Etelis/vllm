@@ -209,6 +209,7 @@ if TYPE_CHECKING:
     VLLM_NIXL_SIDE_CHANNEL_PORT: int = 5600
     VLLM_P2P_SIDE_CHANNEL_HOST: str = "localhost"
     VLLM_P2P_SIDE_CHANNEL_PORT: int = 5710
+    VLLM_P2P_LOOKUP_TIMEOUT_S: float = 10.0
     VLLM_EC_SIDE_CHANNEL_HOST: str = "localhost"
     VLLM_EC_SIDE_CHANNEL_PORT: int = 5601
     VLLM_MOONCAKE_BOOTSTRAP_PORT: int = 8998
@@ -1579,6 +1580,15 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Port the P2P KV-offload control socket binds to.
     "VLLM_P2P_SIDE_CHANNEL_PORT": lambda: int(
         os.getenv("VLLM_P2P_SIDE_CHANNEL_PORT", "5710")
+    ),
+    # How long a P2P KV-offload block lookup may stay unanswered by the peer
+    # before it is resolved as a miss and the blocks are recomputed locally.
+    # A producer bounds its own pending-key resolution well below this, so
+    # exceeding it means the control session is broken rather than slow.
+    # Set to 0 to wait indefinitely (the request stays deferred until it
+    # finishes or the peer is reaped).
+    "VLLM_P2P_LOOKUP_TIMEOUT_S": lambda: float(
+        os.getenv("VLLM_P2P_LOOKUP_TIMEOUT_S", "10.0")
     ),
     # IP address used for the EC connector's ZMQ side channel
     # (producer ROUTER bind, consumer DEALER dial).

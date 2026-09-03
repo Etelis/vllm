@@ -28,6 +28,13 @@ _HEARTBEAT_IVL_MS = 2000
 _HEARTBEAT_TIMEOUT_MS = 10000
 _HEARTBEAT_TTL_MS = 10000
 
+# Linger applied when a connection releases its sockets. Long enough for a
+# graceful DisconnectMsg to reach a live peer, short enough that a reaped
+# peer's DEALER — and the ZMTP identity it holds against that peer's ROUTER —
+# is released promptly instead of being kept alive by a queue that will never
+# drain.
+_CLOSE_LINGER_MS = 100
+
 # Shared sentinels returned when there is nothing to report.
 _EMPTY_INBOX: tuple[dict, ...] = ()
 _EMPTY_NEW_CONNECTIONS: tuple[ControlConnection, ...] = ()
@@ -47,6 +54,10 @@ def _apply_heartbeat(sock: zmq.Socket) -> None:
 class _Sockets:
     dealer: zmq.Socket
     monitor: zmq.Socket
+    # inproc endpoint the monitor pair is bound to. Unique per connection —
+    # see _open_connection — and carried here so it can be logged, since it
+    # is the only thing distinguishing successive connections to one peer.
+    monitor_addr: str
 
 
 class ZmqConnection(ControlConnection):
@@ -55,12 +66,20 @@ class ZmqConnection(ControlConnection):
     def __init__(self, peer_id: str, sockets: _Sockets) -> None:
         super().__init__(peer_id)
         self._sockets = sockets
+        # Liveness and socket ownership are tracked separately, as the
+        # ControlConnection contract describes them: mark_dead() stops the
+        # session using this connection, close() releases the sockets. One
+        # shared flag would make close() a no-op after mark_dead(), leaking
+        # the DEALER on every reaped peer — and a leaked DEALER keeps holding
+        # its identity, so the peer's next connect is dropped by our ROUTER
+        # rather than replacing it.
+        self._alive = True
         self._closed = False
         self._inbox: list[dict] = []
 
     def send(self, msg: dict) -> None:
         """Send a msgpack-encoded message to this peer."""
-        if self._closed:
+        if not self._alive:
             raise RuntimeError(
                 f"ZmqConnection: send on closed connection to {self.peer_id}"
             )
@@ -77,23 +96,30 @@ class ZmqConnection(ControlConnection):
 
     @property
     def alive(self) -> bool:
-        return not self._closed
+        return self._alive
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        self._alive = False
         logger.info("ZmqConnection: closing connection to %s", self.peer_id)
-        self._sockets.monitor.close()
-        self._sockets.dealer.close()
+        self._sockets.monitor.close(linger=0)
+        self._sockets.dealer.close(linger=_CLOSE_LINGER_MS)
 
     def enqueue(self, msg: dict) -> None:
         """Buffer an incoming message."""
         self._inbox.append(msg)
 
     def mark_dead(self) -> None:
-        """Mark connection as disconnected."""
-        self._closed = True
+        """Mark connection as disconnected. The sockets are still owed a
+        close() — the transport does it when it sweeps the connection."""
+        self._alive = False
+
+    @property
+    def monitor_addr(self) -> str:
+        """This connection's unique inproc monitor endpoint."""
+        return self._sockets.monitor_addr
 
     @property
     def monitor_socket(self) -> zmq.Socket:
@@ -114,10 +140,19 @@ class ZmqTransport(ControlTransport):
 
         self._connections: dict[str, ZmqConnection] = {}
         self._pending_inbound: list[tuple[str, dict]] = []
+        # Serial number making each connection's monitor endpoint unique.
+        self._monitor_seq = 0
 
         self._zmq_ctx = zmq.Context()
         self._router: zmq.Socket = self._zmq_ctx.socket(zmq.ROUTER)
         _apply_heartbeat(self._router)
+        # Every DEALER identifies itself by its owner's fixed host:port, so a
+        # peer that re-opens its connection presents an identity we may still
+        # hold. Without HANDOVER libzmq silently drops the replacement pipe
+        # while the peer's TCP and ZMTP handshakes both succeed: it logs a
+        # successful connect and then nothing it sends is ever delivered.
+        # HANDOVER retires the stale pipe in favour of the new one.
+        self._router.setsockopt(zmq.ROUTER_HANDOVER, 1)
         bind_addr = _tcp_addr(host, port)
         self._router.bind(bind_addr)
         logger.info("ZmqTransport %s: ROUTER bound on %s", self._local_id, bind_addr)
@@ -141,13 +176,22 @@ class ZmqTransport(ControlTransport):
     def poll(self) -> Sequence[ControlConnection]:
         """Process all pending I/O. Returns newly accepted connections.
 
-        - Receives messages (buffered in each connection's inbox)
-        - Creates connections for new inbound peers (connect msg in inbox)
         - Checks monitors for disconnections
         - Removes and closes dead connections
+        - Receives messages (buffered in each connection's inbox)
+        - Creates connections for new inbound peers (connect msg in inbox)
+
+        Disconnect detection and the sweep run before the ROUTER read so a
+        re-opening peer's first message is not enqueued onto the connection
+        it is replacing, which is about to be dropped along with its inbox.
+        A session announces itself with exactly one ConnectMsg and nothing
+        retransmits it, so swallowing that message leaves the peer unable to
+        complete its handshake — and therefore silently unable to send
+        anything at all — until it disconnects again.
         """
-        self._recv_router()
         self._check_monitors()
+        self._sweep_dead_connections()
+        self._recv_router()
 
         # Create connections for new inbound peers
         new_connections: list[ControlConnection] | None = None
@@ -165,10 +209,6 @@ class ZmqTransport(ControlTransport):
                 new_connections.append(conn)
             conn.enqueue(msg)
         self._pending_inbound.clear()
-
-        # Remove dead connections
-        for pid in [p for p, c in self._connections.items() if not c.alive]:
-            self._connections.pop(pid).close()
 
         return (
             new_connections if new_connections is not None else _EMPTY_NEW_CONNECTIONS
@@ -210,8 +250,14 @@ class ZmqTransport(ControlTransport):
         _apply_heartbeat(dealer)
         dealer.identity = self._local_id.encode()
 
+        # The endpoint is per connection, not per peer: a peer's address is
+        # stable across reconnects, so a name derived from it alone collides
+        # with the endpoint the previous connection bound — libzmq releases an
+        # inproc binding asynchronously after close, so re-opening a peer
+        # raises EADDRINUSE here whenever the reconnect wins that race.
         safe_id = peer_id.replace(":", "-").replace("/", "-")
-        monitor_addr = f"inproc://p2p-monitor-{safe_id}"
+        self._monitor_seq += 1
+        monitor_addr = f"inproc://p2p-monitor-{safe_id}-{self._monitor_seq}"
         dealer.monitor(monitor_addr, zmq.EVENT_DISCONNECTED)
 
         monitor_sock = self._zmq_ctx.socket(zmq.PAIR)
@@ -219,17 +265,27 @@ class ZmqTransport(ControlTransport):
 
         dealer.connect(dealer_addr)
 
-        sockets = _Sockets(dealer=dealer, monitor=monitor_sock)
+        sockets = _Sockets(
+            dealer=dealer, monitor=monitor_sock, monitor_addr=monitor_addr
+        )
         conn = ZmqConnection(peer_id, sockets)
         self._connections[peer_id] = conn
         logger.info(
-            "ZmqTransport %s: %s connection established to %s (active connections: %d)",
+            "ZmqTransport %s: %s connection established to %s as %s "
+            "(active connections: %d)",
             self._local_id,
             direction,
             peer_id,
+            monitor_addr,
             len(self._connections),
         )
         return conn
+
+    def _sweep_dead_connections(self) -> None:
+        """Drop dead connections and release their sockets."""
+        dead = [pid for pid, conn in self._connections.items() if not conn.alive]
+        for pid in dead:
+            self._connections.pop(pid).close()
 
     def _recv_router(self) -> None:
         """Non-blocking: receive all pending messages from ROUTER."""

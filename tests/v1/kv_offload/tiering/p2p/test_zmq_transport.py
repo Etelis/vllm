@@ -7,6 +7,7 @@ from __future__ import annotations
 import socket
 import time
 
+import msgspec
 import pytest
 import zmq
 
@@ -75,7 +76,9 @@ def _make_mock_connection(peer_id: str = "test:1234") -> ZmqConnection:
     """Create a ZmqConnection with mock sockets for unit testing."""
     from unittest.mock import MagicMock
 
-    sockets = _Sockets(dealer=MagicMock(), monitor=MagicMock())
+    sockets = _Sockets(
+        dealer=MagicMock(), monitor=MagicMock(), monitor_addr="inproc://test"
+    )
     return ZmqConnection(peer_id, sockets)
 
 
@@ -228,3 +231,150 @@ class TestZmqTransportConnectivity:
         transport, _ = _make_transport()
         transport.close()
         transport.close()  # should not raise
+
+
+class TestReconnectSurvival:
+    """A peer whose connection died must be able to re-open it.
+
+    Peers reconnect after any 10s silence on the control socket, and their
+    DEALER identity is their own fixed host:port — so a reconnect always
+    collides with the pipe it replaces, and its first message always races
+    the sweep of the connection it replaces. Both had to be survivable
+    before a transient network stall stopped being a permanent outage.
+    """
+
+    def test_sweep_releases_a_dead_connection_sockets(self):
+        """A reaped peer's DEALER must be released, not merely flagged.
+
+        A DEALER left open keeps holding its ZMTP identity against the peer's
+        ROUTER, so the peer's next connect is dropped rather than replacing
+        it — besides leaking two file descriptors on every reap.
+        """
+        transport_a, port_a = _make_transport()
+        transport_b, _ = _make_transport()
+
+        try:
+            conn = transport_b.connect(f"127.0.0.1:{port_a}")
+            dealer, monitor = conn._sockets.dealer, conn._sockets.monitor
+            assert not dealer.closed
+
+            conn.mark_dead()
+            transport_b.poll()
+
+            assert dealer.closed
+            assert monitor.closed
+        finally:
+            transport_a.close()
+            transport_b.close()
+
+    def test_mark_dead_alone_leaves_the_sockets_to_the_transport(self):
+        """mark_dead() stops use; the transport still owes the release."""
+        conn = _make_mock_connection()
+
+        conn.mark_dead()
+
+        assert conn.alive is False
+        conn._sockets.dealer.close.assert_not_called()
+
+    def test_close_after_mark_dead_still_releases(self):
+        conn = _make_mock_connection()
+
+        conn.mark_dead()
+        conn.close()
+
+        conn._sockets.dealer.close.assert_called_once()
+        conn._sockets.monitor.close.assert_called_once()
+
+    def test_a_reused_identity_takes_over_the_router_pipe(self):
+        """The replacement pipe must win while the old one is still open.
+
+        Without ROUTER_HANDOVER libzmq silently drops the newcomer, and its
+        TCP and ZMTP handshakes both succeed anyway — so the peer logs a
+        successful connect and is then mute for the life of the process.
+        """
+        transport_a, port_a = _make_transport()
+        ctx = zmq.Context()
+        first = ctx.socket(zmq.DEALER)
+        second = ctx.socket(zmq.DEALER)
+
+        try:
+            for sock in (first, second):
+                sock.identity = b"127.0.0.1:9999"
+            first.connect(f"tcp://127.0.0.1:{port_a}")
+            first.send(msgspec.msgpack.encode({"seq": 1}))
+
+            conns = _wait_for_inbound(transport_a)
+            assert _wait_for_messages(transport_a, conns[0], 1) == [{"seq": 1}]
+
+            # The first pipe is never closed — that is the reconnect race.
+            second.connect(f"tcp://127.0.0.1:{port_a}")
+            second.send(msgspec.msgpack.encode({"seq": 2}))
+
+            assert _wait_for_messages(transport_a, conns[0], 1) == [{"seq": 2}]
+        finally:
+            first.close(linger=0)
+            second.close(linger=0)
+            ctx.destroy(linger=0)
+            transport_a.close()
+
+    def test_a_reconnects_message_is_not_swept_with_the_old_connection(self):
+        """Queued before the sweep, delivered after it.
+
+        A session announces itself with exactly one ConnectMsg and nothing
+        retransmits it. Reading the ROUTER before sweeping would enqueue that
+        message onto the connection being dropped and discard it, leaving the
+        peer unable to ever complete its handshake.
+        """
+        transport_a, port_a = _make_transport()
+        transport_b, port_b = _make_transport()
+
+        try:
+            conn_b = transport_b.connect(f"127.0.0.1:{port_a}")
+            conn_b.send({"type": "connect"})
+            first = _wait_for_inbound(transport_a)
+            assert _wait_for_messages(transport_a, first[0], 1) == [{"type": "connect"}]
+
+            # The peer re-announces itself while we still hold the connection
+            # it is replacing; its message reaches our ROUTER queue first.
+            conn_b.send({"type": "connect", "epoch": "2"})
+            assert transport_a._router.poll(2000) & zmq.POLLIN
+            first[0].mark_dead()
+
+            second = _wait_for_inbound(transport_a)
+            assert len(second) == 1
+            assert second[0] is not first[0]
+            assert second[0].peer_id == f"127.0.0.1:{port_b}"
+            assert _wait_for_messages(transport_a, second[0], 1) == [
+                {"type": "connect", "epoch": "2"}
+            ]
+        finally:
+            transport_a.close()
+            transport_b.close()
+
+    def test_reopening_a_peer_gets_a_fresh_monitor_endpoint(self):
+        """Each connection needs its own inproc monitor endpoint.
+
+        A peer's address is stable across reconnects, so an endpoint named
+        after it alone is still bound by the connection being replaced —
+        libzmq releases an inproc binding asynchronously after close — and
+        re-opening that peer then raises EADDRINUSE instead of reconnecting.
+        Asserting the endpoints differ pins the invariant rather than the
+        race, which only sometimes lands on the collision.
+        """
+        transport_a, port_a = _make_transport()
+        transport_b, _ = _make_transport()
+        peer = f"127.0.0.1:{port_a}"
+
+        try:
+            addrs = []
+            for _ in range(3):
+                conn = transport_b.connect(peer)
+                addrs.append(conn.monitor_addr)
+                conn.mark_dead()
+                transport_b.poll()
+
+            assert len(set(addrs)) == len(addrs), addrs
+            assert peer not in transport_b._connections
+        finally:
+            transport_a.close()
+            transport_b.close()

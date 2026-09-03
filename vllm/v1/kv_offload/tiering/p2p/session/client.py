@@ -3,10 +3,11 @@
 """Client-role state machine for a single peer session.
 
 Handles outgoing fetch requests, abort-on-timeout, abort-ack timeout,
-and produces ``LoadResult`` for completed loads. The session coordinator
-parses wire messages and dispatches typed arguments here; this module
-never touches ``ControlConnection`` directly — it emits via the ``send``
-callback injected by the coordinator (which gates on ConnectAck).
+lookup deadlines, and produces ``LoadResult`` for completed loads. The
+session coordinator parses wire messages and dispatches typed arguments
+here; this module never touches ``ControlConnection`` directly — it emits
+via the ``send`` callback injected by the coordinator (which gates on
+ConnectAck).
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NamedTuple
 
+import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm.v1.kv_offload.base import OffloadKey
 from vllm.v1.kv_offload.tiering.p2p.session.protocol import (
@@ -74,14 +76,22 @@ class _ClientRequestState:
 
     # -- Lookup phase (symmetric P2P only; untouched for PD) --
     # Probe outcome per OffloadKey: None while in-flight (registered/sent
-    # but unresolved), True/False once a LookupRespMsg lands. There is no
-    # timeout — finish (via finish_request) is guaranteed after
-    # the request's lookup() calls and clears every probe, so an
-    # unanswered probe simply stays None until then.
+    # but unresolved), True/False once a LookupRespMsg lands. A probe the
+    # peer never answers is resolved to False by expire_stale_lookups so
+    # lookup() cannot defer the request forever.
     probes: dict[OffloadKey, bool | None] = field(default_factory=dict)
     # OffloadKeys registered but not yet flushed onto the wire. Drained and
     # cleared by the next flush_pending_lookups.
     unsent: list[OffloadKey] = field(default_factory=list)
+
+    # How many entries in `probes` are still None, and when the current
+    # unresolved streak started. The lookup deadline runs off `unresolved_since`
+    # and so only ticks while the peer actually owes us an answer: it restarts
+    # from zero each time the peer has answered everything asked so far, which
+    # keeps a request whose blocks are discovered over many scheduler steps
+    # from being charged for the steps in between.
+    unresolved: int = 0
+    unresolved_since: float | None = None
 
     # Monotonic lookup/fetch signalling phase; see ``ClientPhase``.
     phase: ClientPhase = ClientPhase.REGISTERED
@@ -95,6 +105,16 @@ class LoadResult(NamedTuple):
     job_id: int
     kv_request_id: str
     success: bool
+
+
+class LookupBacklog(NamedTuple):
+    """Snapshot of the probes this peer still owes an answer for."""
+
+    pending: int  # probes registered but not yet resolved
+    oldest_age_s: float  # how long the longest-waiting request has waited
+
+
+_NO_BACKLOG = LookupBacklog(pending=0, oldest_age_s=0.0)
 
 
 class ClientCloseResult(NamedTuple):
@@ -140,6 +160,14 @@ class ClientRole:
         # discarded wherever load is cleared, and cleared on close.
         self._active_loads: set[str] = set()
         self._completed_loads: list[LoadResult] = []
+        # kv_request_ids holding at least one unresolved probe — the work-list
+        # expire_stale_lookups walks, so it doesn't scan every live request.
+        # Kept in sync with ``st.unresolved``: armed when a request's count
+        # rises from zero, discarded wherever it returns to zero.
+        self._unresolved_lookups: set[str] = set()
+        self._lookup_timeout_s = envs.VLLM_P2P_LOOKUP_TIMEOUT_S
+        # Cumulative count of probes given up on, for metrics.
+        self._timed_out_lookups = 0
 
     # ------------------------------------------------------------------
     # State helpers
@@ -167,10 +195,37 @@ class ClientRole:
         if st is not None and st.load is None and not st.probes and not st.unsent:
             del self._requests[kv_request_id]
 
+    def _drop_probes(self, kv_request_id: str, st: _ClientRequestState) -> None:
+        """Drop every probe for a request, along with its deadline state."""
+        st.probes.clear()
+        st.unresolved = 0
+        st.unresolved_since = None
+        self._unresolved_lookups.discard(kv_request_id)
+
     @property
     def has_active_loads(self) -> bool:
         """True if any kv_request_id has a fetch in flight."""
         return bool(self._active_loads)
+
+    @property
+    def timed_out_lookups(self) -> int:
+        """Cumulative probes resolved to MISS by the lookup deadline."""
+        return self._timed_out_lookups
+
+    def lookup_backlog(self) -> LookupBacklog:
+        """Unanswered-probe snapshot for metrics."""
+        if not self._unresolved_lookups:
+            return _NO_BACKLOG
+        now = time.monotonic()
+        pending = 0
+        oldest = now
+        for req_id in self._unresolved_lookups:
+            st = self._requests.get(req_id)
+            if st is None or st.unresolved_since is None:
+                continue
+            pending += st.unresolved
+            oldest = min(oldest, st.unresolved_since)
+        return LookupBacklog(pending=pending, oldest_age_s=now - oldest)
 
     # ------------------------------------------------------------------
     # Public API
@@ -220,7 +275,7 @@ class ClientRole:
         # never probes, so probes is empty and the clear is a no-op.
         if st.probes:
             assert all(st.probes.get(key) is True for key in keys)
-        st.probes.clear()
+        self._drop_probes(kv_request_id, st)
 
     def finish(self, kv_request_id: str) -> None:
         """Finish a request: abort any in-flight load and release lookup state.
@@ -268,7 +323,7 @@ class ClientRole:
                     FetchMsg.BLOCK_INDEXES: [],
                 }
             )
-        st.probes.clear()
+        self._drop_probes(kv_request_id, st)
         st.unsent.clear()
         self._flush_pending.discard(kv_request_id)
         self._maybe_prune(kv_request_id)
@@ -359,6 +414,10 @@ class ClientRole:
         okey = OffloadKey(key)
         if okey in st.probes:
             return st.probes[okey]
+        if st.unresolved == 0:
+            st.unresolved_since = time.monotonic()
+            self._unresolved_lookups.add(kv_request_id)
+        st.unresolved += 1
         st.probes[okey] = None
         st.unsent.append(okey)
         self._flush_pending.add(kv_request_id)
@@ -446,7 +505,67 @@ class ClientRole:
         for h, hit in zip(keys, hits):
             key = OffloadKey(h)
             if key in st.probes:
+                if st.probes[key] is None:
+                    st.unresolved -= 1
                 st.probes[key] = hit
+        if st.unresolved == 0:
+            st.unresolved_since = None
+            self._unresolved_lookups.discard(kv_request_id)
+
+    def expire_stale_lookups(self) -> int:
+        """Resolve probes the peer has stopped answering as misses.
+
+        A registered probe answers RETRY until a LookupRespMsg lands, and
+        RETRY defers the request in the scheduler. A peer that is reachable
+        at the TCP level but not answering — a control session whose
+        handshake never completed, a reconnect its ROUTER never accepted —
+        would otherwise keep the request deferred until the HTTP client gives
+        up: no load ever starts, so no load timeout applies. Resolving to
+        False falls those blocks back to local prefill, which is always
+        available.
+
+        A producer bounds its own pending-key resolution well below this
+        deadline, so exceeding it means the session is broken rather than
+        busy. Returns the number of probes expired.
+        """
+        if self._lookup_timeout_s <= 0 or not self._unresolved_lookups:
+            return 0
+        deadline = time.monotonic() - self._lookup_timeout_s
+        expired: list[str] | None = None
+        for req_id in self._unresolved_lookups:
+            st = self._requests.get(req_id)
+            if st is None or st.unresolved_since is None:
+                continue
+            if st.unresolved_since <= deadline:
+                if expired is None:
+                    expired = []
+                expired.append(req_id)
+        if expired is None:
+            return 0
+
+        total = 0
+        for req_id in expired:
+            st = self._requests[req_id]
+            total += st.unresolved
+            logger.warning(
+                "P2PSession %s: %d lookup(s) for kv_request_id=%s unanswered "
+                "after %.1fs — falling back to local prefill",
+                self._peer_id,
+                st.unresolved,
+                req_id,
+                self._lookup_timeout_s,
+            )
+            for okey, hit in st.probes.items():
+                if hit is None:
+                    st.probes[okey] = False
+            st.unresolved = 0
+            st.unresolved_since = None
+            self._unresolved_lookups.discard(req_id)
+            # Nothing is owed on the wire for keys we have just given up on.
+            st.unsent.clear()
+            self._flush_pending.discard(req_id)
+        self._timed_out_lookups += total
+        return total
 
     def collect_results(self) -> list[LoadResult]:
         """Walk load timeouts and drain completed loads.
@@ -455,8 +574,8 @@ class ClientRole:
         sent and enter the aborting phase. Aborting requests past
         ``_ABORT_ACK_TIMEOUT_S`` are surfaced as failed loads.
 
-        Lookups have no timeout: an unanswered probe stays None (RETRY)
-        until finish_request clears it — see ``_ClientRequestState.probes``.
+        Unanswered lookups are bounded separately, by
+        ``expire_stale_lookups``.
         """
         now = time.monotonic()
         to_remove: list[str] = []
@@ -519,6 +638,7 @@ class ClientRole:
         ]
         self._requests.clear()
         self._flush_pending.clear()
+        self._unresolved_lookups.clear()
         self._active_loads.clear()
         self._completed_loads.clear()
         return ClientCloseResult(failed_jobs=failed_jobs, failed_req_ids=failed_req_ids)

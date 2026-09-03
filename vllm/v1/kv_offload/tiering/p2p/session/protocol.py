@@ -19,7 +19,11 @@ Connection Lifecycle
    RDMA peer, and replies with ConnectAckMsg.
 3. Client receives ConnectAckMsg and transitions to ready state
    (flushes any queued messages).
-4. Either side may send DisconnectMsg to gracefully close.
+4. A ConnectMsg on an already-established session carrying an epoch the
+   receiver has not seen means the sender rebuilt its session. The
+   receiver drops its per-peer state, re-announces itself, and acks, so
+   the pair re-handshakes without either engine restarting.
+5. Either side may send DisconnectMsg to gracefully close.
 
 Block Transfer Flow (happy path)
 ---------------------------------
@@ -130,6 +134,12 @@ class ConnectMsg:
         HASH_SEED: The peer's PYTHONHASHSEED. Block hashes chain from a seed
             derived from it, so peers with different values compute different
             hashes for identical content and must not exchange blocks.
+        EPOCH: Nonce identifying the sending session instance. A peer's
+            address is stable across reconnects, so the epoch is what
+            distinguishes "the session you already know" from "a session I
+            rebuilt": an unfamiliar epoch on an established session means the
+            peer dropped its side and the handshake must be redone. Optional
+            — peers predating the field omit it and cannot be told apart.
     """
 
     TYPE = "connect"
@@ -140,6 +150,7 @@ class ConnectMsg:
     BLOCK_LEN = "block_len"
     CONFIG_FINGERPRINT = "config_fingerprint"
     HASH_SEED = "hash_seed"
+    EPOCH = "epoch"
 
     @staticmethod
     def validate(msg: dict) -> None:
@@ -150,6 +161,8 @@ class ConnectMsg:
         _require_pos_int(msg, ConnectMsg.NUM_BLOCKS)
         _require_pos_int(msg, ConnectMsg.BLOCK_LEN)
         _require(msg, ConnectMsg.HASH_SEED, str)
+        if ConnectMsg.EPOCH in msg:
+            _require(msg, ConnectMsg.EPOCH, str)
 
 
 class ConnectAckMsg:
