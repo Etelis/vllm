@@ -1,0 +1,282 @@
+{
+  "validation_source_revision": "1bd6fe4b1014a571d70159b4df71642f7a8e82a2",
+  "feature_source_revision": "1dc2802e7d84c13ca09977ae6c8b945534bc6f17",
+  "includes_separate_unmerged_triton_moe_fix": true,
+  "metric": "1000 * engine_transition_seconds: receipt of the POST /v1/pd_role 202 response to client observation of phase=ready; includes engine drain and readiness polling, excludes the preceding router reservation wait and POST request/response interval.",
+  "readiness_poll_sleep_ms": 10,
+  "hardware": {
+    "gpu_model": "NVIDIA H100 80GB HBM3",
+    "gpu_count": 6,
+    "nodes": 1
+  },
+  "configuration": {
+    "groups": 3,
+    "expert_parallel_size_per_group": 2,
+    "tensor_parallel_size": 1,
+    "data_parallel_size": 2,
+    "dtype": "bfloat16",
+    "all2all_backend": "deepep_v2",
+    "kv_connector": "NixlConnector",
+    "kv_transfer_direction": "pull",
+    "cuda_graphs": true,
+    "batch_invariant": true,
+    "context_limit_tokens": 4096,
+    "batch_limit_tokens": 4096,
+    "max_sequences": 64,
+    "gpu_memory_utilization": 0.75
+  },
+  "workload": {
+    "concurrent_clients": 8,
+    "fixed_prompts": 8,
+    "output_tokens": 64,
+    "greedy": true,
+    "ignore_eos": true,
+    "fresh_cache_salt": true,
+    "static_baseline_seconds": 20
+  },
+  "models": [
+    {
+      "model": "allenai/OLMoE-1B-7B-0924-Instruct",
+      "model_revision": "7f1c97f440f06ce36705e4f2b843edb5925f4498",
+      "prompt_tokens_min": 299,
+      "prompt_tokens_max": 306,
+      "static_baseline_requests": 482,
+      "static_baseline_errors": 0,
+      "static_baseline_output_mismatches": 0,
+      "load_requests": 1679,
+      "reference_requests": 8,
+      "request_errors": 0,
+      "test_worker_errors": 0,
+      "output_mismatches": 0,
+      "transitions": 20,
+      "all_records_match_reference_text": true,
+      "all_records_have_remote_kv_blocks": true,
+      "identity_validation": {
+        "groups": 3,
+        "workers_per_group": 2,
+        "transition_snapshots": 20,
+        "inspection_errors": 0,
+        "changed_identities_or_counters": 0
+      },
+      "startup_to_quiescence_identity_continuity": true,
+      "all_six_cores_drained": true,
+      "fixed_decode_emitted_chunks_in_every_measured_interval": true,
+      "held_kv_timeout_rollback_passed": true,
+      "held_kv_drain_timeout_ms": 250,
+      "stale_epoch_http_status": 409,
+      "nixl_counter_totals": {
+        "vllm:nixl_bytes_transferred_sum": 68105011200.0,
+        "vllm:nixl_xfer_time_seconds_count": 1687.0,
+        "vllm:nixl_num_failed_transfers_total": 0.0,
+        "vllm:nixl_num_failed_notifications_total": 0.0,
+        "vllm:nixl_num_kv_expired_reqs_total": 0.0
+      },
+      "timings": [
+        {
+          "direction": "P → D",
+          "values": [
+            37.07815590314567,
+            24.987946031615138,
+            12.954889913089573,
+            25.357407052069902,
+            13.120695017278194,
+            13.380312011577189,
+            12.414106051437557,
+            12.302674003876746,
+            12.228637933731079,
+            12.54663395229727
+          ],
+          "n": 10,
+          "median_ms": 13.037792465183884,
+          "q1_ms": 12.447238026652485,
+          "q3_ms": 22.08603752660565,
+          "min_ms": 12.228637933731079,
+          "max_ms": 37.07815590314567
+        },
+        {
+          "direction": "D → P",
+          "values": [
+            267.2080249758437,
+            244.26944798324257,
+            263.165298034437,
+            220.71343404240906,
+            221.8193239532411,
+            189.02555597014725,
+            213.5427719913423,
+            224.07937794923782,
+            266.81598904542625,
+            271.9260490266606
+          ],
+          "n": 10,
+          "median_ms": 234.1744129662402,
+          "q1_ms": 220.98990652011707,
+          "q3_ms": 265.90331629267894,
+          "min_ms": 189.02555597014725,
+          "max_ms": 271.9260490266606
+        }
+      ]
+    },
+    {
+      "model": "deepseek-ai/DeepSeek-V2-Lite-Chat",
+      "model_revision": "85864749cd611b4353ce1decdb286193298f64c7",
+      "prompt_tokens_min": 287,
+      "prompt_tokens_max": 299,
+      "static_baseline_requests": 154,
+      "static_baseline_errors": 0,
+      "static_baseline_output_mismatches": 0,
+      "load_requests": 751,
+      "reference_requests": 8,
+      "request_errors": 0,
+      "test_worker_errors": 0,
+      "output_mismatches": 0,
+      "transitions": 20,
+      "all_records_match_reference_text": true,
+      "all_records_have_remote_kv_blocks": true,
+      "identity_validation": {
+        "groups": 3,
+        "workers_per_group": 2,
+        "transition_snapshots": 20,
+        "inspection_errors": 0,
+        "changed_identities_or_counters": 0
+      },
+      "startup_to_quiescence_identity_continuity": true,
+      "all_six_cores_drained": true,
+      "fixed_decode_emitted_chunks_in_every_measured_interval": true,
+      "held_kv_timeout_rollback_passed": true,
+      "held_kv_drain_timeout_ms": 250,
+      "stale_epoch_http_status": 409,
+      "nixl_counter_totals": {
+        "vllm:nixl_bytes_transferred_sum": 7129534464.0,
+        "vllm:nixl_xfer_time_seconds_count": 759.0,
+        "vllm:nixl_num_failed_transfers_total": 0.0,
+        "vllm:nixl_num_failed_notifications_total": 0.0,
+        "vllm:nixl_num_kv_expired_reqs_total": 0.0
+      },
+      "timings": [
+        {
+          "direction": "P → D",
+          "values": [
+            13.007648056373,
+            25.001005036756396,
+            12.123835040256381,
+            12.910877936519682,
+            23.53048394434154,
+            12.634081998839974,
+            19.79966601356864,
+            12.275023036636412,
+            13.180086971260607,
+            13.700164970941842
+          ],
+          "n": 10,
+          "median_ms": 13.093867513816804,
+          "q1_ms": 12.703280983259901,
+          "q3_ms": 18.27479075291194,
+          "min_ms": 12.123835040256381,
+          "max_ms": 25.001005036756396
+        },
+        {
+          "direction": "D → P",
+          "values": [
+            561.700229998678,
+            569.8528080247343,
+            633.5430729668587,
+            641.0532579757273,
+            523.6872109817341,
+            580.306492978707,
+            595.0590329011902,
+            619.7242330526933,
+            624.1920000175014,
+            586.1630080034956
+          ],
+          "n": 10,
+          "median_ms": 590.6110204523429,
+          "q1_ms": 572.4662292632274,
+          "q3_ms": 623.0750582762994,
+          "min_ms": 523.6872109817341,
+          "max_ms": 641.0532579757273
+        }
+      ]
+    },
+    {
+      "model": "Qwen/Qwen3-30B-A3B",
+      "model_revision": "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39",
+      "prompt_tokens_min": 298,
+      "prompt_tokens_max": 310,
+      "static_baseline_requests": 167,
+      "static_baseline_errors": 0,
+      "static_baseline_output_mismatches": 0,
+      "load_requests": 630,
+      "reference_requests": 8,
+      "request_errors": 0,
+      "test_worker_errors": 0,
+      "output_mismatches": 0,
+      "transitions": 20,
+      "all_records_match_reference_text": true,
+      "all_records_have_remote_kv_blocks": true,
+      "identity_validation": {
+        "groups": 3,
+        "workers_per_group": 2,
+        "transition_snapshots": 20,
+        "inspection_errors": 0,
+        "changed_identities_or_counters": 0
+      },
+      "startup_to_quiescence_identity_continuity": true,
+      "all_six_cores_drained": true,
+      "fixed_decode_emitted_chunks_in_every_measured_interval": true,
+      "held_kv_timeout_rollback_passed": true,
+      "held_kv_drain_timeout_ms": 250,
+      "stale_epoch_http_status": 409,
+      "nixl_counter_totals": {
+        "vllm:nixl_bytes_transferred_sum": 19317915648.0,
+        "vllm:nixl_xfer_time_seconds_count": 638.0,
+        "vllm:nixl_num_failed_transfers_total": 0.0,
+        "vllm:nixl_num_failed_notifications_total": 0.0,
+        "vllm:nixl_num_kv_expired_reqs_total": 0.0
+      },
+      "timings": [
+        {
+          "direction": "P → D",
+          "values": [
+            37.22727706190199,
+            35.449023940600455,
+            25.540387025102973,
+            12.699979008175433,
+            46.73474107403308,
+            38.82338595576584,
+            36.190466955304146,
+            12.773448950611055,
+            48.798786010593176,
+            12.89225509390235
+          ],
+          "n": 10,
+          "median_ms": 35.8197454479523,
+          "q1_ms": 16.054288076702505,
+          "q3_ms": 38.42435873229988,
+          "min_ms": 12.699979008175433,
+          "max_ms": 48.798786010593176
+        },
+        {
+          "direction": "D → P",
+          "values": [
+            755.8468589559197,
+            657.4269919656217,
+            758.8385019917041,
+            641.2801060359925,
+            755.9451820561662,
+            792.7796890726313,
+            779.8768889624625,
+            613.974581938237,
+            790.6160959973931,
+            793.0012099677697
+          ],
+          "n": 10,
+          "median_ms": 757.3918420239352,
+          "q1_ms": 682.0319587131962,
+          "q3_ms": 787.9312942386605,
+          "min_ms": 613.974581938237,
+          "max_ms": 793.0012099677697
+        }
+      ]
+    }
+  ]
+}

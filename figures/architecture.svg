@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="936pt" height="489.6pt" viewBox="0 0 936 489.6" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.10.8, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 489.6 
+L 936 489.6 
+L 936 0 
+L 0 0 
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="line2d_1">
+    <path d="M 309.6 388.8 
+L 309.6 154.8 
+" clip-path="url(#p60c6061e90)" style="fill: none; stroke-dasharray: 3,4; stroke-dashoffset: 0; stroke: #999999"/>
+   </g>
+   <g id="line2d_2">
+    <path d="M 698.4 388.8 
+L 698.4 154.8 
+" clip-path="url(#p60c6061e90)" style="fill: none; stroke-dasharray: 3,4; stroke-dashoffset: 0; stroke: #999999"/>
+   </g>
+   <g id="patch_2">
+    <path d="M 147.6 213.84 
+L 896.4 213.84 
+L 896.4 172.08 
+L 147.6 172.08 
+z
+" clip-path="url(#p60c6061e90)" style="fill: #ffffff; stroke: #8a8a8a; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 147.6 375.12 
+L 896.4 375.12 
+L 896.4 333.36 
+L 147.6 333.36 
+z
+" clip-path="url(#p60c6061e90)" style="fill: #ffffff; stroke: #8a8a8a; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 147.6 302.4 
+L 309.6 302.4 
+L 309.6 228.96 
+L 147.6 228.96 
+z
+" clip-path="url(#p60c6061e90)" style="fill: #ffffff; stroke: #2458a6; stroke-width: 1.1; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 309.6 302.4 
+L 586.8 302.4 
+L 586.8 228.96 
+L 309.6 228.96 
+z
+" clip-path="url(#p60c6061e90)" style="fill: #f1f1f1; stroke: #2458a6; stroke-width: 1.1; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 586.8 302.4 
+L 698.4 302.4 
+L 698.4 228.96 
+L 586.8 228.96 
+z
+" clip-path="url(#p60c6061e90)" style="fill: #f1f1f1; stroke: #2458a6; stroke-width: 1.1; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 698.4 302.4 
+L 896.4 302.4 
+L 896.4 228.96 
+L 698.4 228.96 
+z
+" clip-path="url(#p60c6061e90)" style="fill: #ffffff; stroke: #2458a6; stroke-width: 1.1; stroke-linejoin: miter"/>
+   </g>
+   <g id="line2d_3">
+    <path d="M 309.6 129.6 
+L 309.6 119.52 
+L 698.4 119.52 
+L 698.4 129.6 
+" clip-path="url(#p60c6061e90)" style="fill: none; stroke: #202020; stroke-linecap: square"/>
+   </g>
+   <g id="text_1">
+    <text style="font-weight: 700; font-size: 20px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #202020" x="39.6" y="33.12" transform="rotate(-0 39.6 33.12)">Whole-group role switch: prefill → decode</text>
+   </g>
+   <g id="text_2">
+    <text style="font-size: 12px; font-family: 'DejaVu Sans'; fill: #202020" transform="translate(265.566562 75.144844)">Stop assigning</text>
+    <text style="font-size: 12px; font-family: 'DejaVu Sans'; fill: #202020" transform="translate(266.819062 91.317656)">new work to B</text>
+   </g>
+   <g id="text_3">
+    <text style="font-size: 12px; font-family: 'DejaVu Sans'; fill: #202020" transform="translate(634.167187 75.144844)">Publish decode ready</text>
+    <text style="font-size: 12px; font-family: 'DejaVu Sans'; fill: #202020" transform="translate(605.912812 91.317656)">after every core acknowledges</text>
+   </g>
+   <g id="text_4">
+    <text style="font-size: 11.5px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #202020" x="504" y="144.098203" transform="rotate(-0 504 144.098203)">B excluded from new routing</text>
+   </g>
+   <g id="text_5">
+    <text style="font-weight: 700; font-size: 13px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #202020" x="39.6" y="196.547188" transform="rotate(-0 39.6 196.547188)">Group A</text>
+   </g>
+   <g id="text_6">
+    <text style="font-size: 13px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #202020" x="522" y="196.547188" transform="rotate(-0 522 196.547188)">Prefill — serving throughout</text>
+   </g>
+   <g id="text_7">
+    <text style="font-weight: 700; font-size: 13px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #202020" x="39.6" y="357.827187" transform="rotate(-0 39.6 357.827187)">Group C</text>
+   </g>
+   <g id="text_8">
+    <text style="font-size: 13px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #202020" x="522" y="357.827187" transform="rotate(-0 522 357.827187)">Decode — serving throughout</text>
+   </g>
+   <g id="text_9">
+    <text style="font-weight: 700; font-size: 13px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #2458a6" x="39.6" y="267.827187" transform="rotate(-0 39.6 267.827187)">Group B</text>
+   </g>
+   <g id="text_10">
+    <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #686868" x="39.6" y="285.84" transform="rotate(-0 39.6 285.84)">all EP ranks</text>
+   </g>
+   <g id="text_11">
+    <text style="font-size: 12.5px; font-family: 'DejaVu Sans'; fill: #202020" transform="translate(211.257227 259.993525)">Prefill</text>
+    <text style="font-size: 12.5px; font-family: 'DejaVu Sans'; fill: #202020" transform="translate(203.732812 278.264912)">epoch e</text>
+   </g>
+   <g id="text_12">
+    <text style="font-size: 12.5px; font-family: 'DejaVu Sans'; fill: #202020" transform="translate(383.491016 259.993525)">Finish assigned work</text>
+    <text style="font-size: 12.5px; font-family: 'DejaVu Sans'; fill: #202020" transform="translate(384.275195 278.264912)">Wait for KV handoffs</text>
+   </g>
+   <g id="text_13">
+    <text style="font-size: 12.5px; font-family: 'DejaVu Sans'; fill: #202020" transform="translate(618.049219 259.993525)">Commit</text>
+    <text style="font-size: 12.5px; font-family: 'DejaVu Sans'; fill: #202020" transform="translate(616.519922 278.264912)">all cores</text>
+   </g>
+   <g id="text_14">
+    <text style="font-size: 12.5px; font-family: 'DejaVu Sans'; fill: #202020" transform="translate(773.667578 259.993525)">Decode</text>
+    <text style="font-size: 12.5px; font-family: 'DejaVu Sans'; fill: #202020" transform="translate(759.346289 278.264912)">epoch e + 1</text>
+   </g>
+   <g id="patch_8">
+    <path d="M 149.602368 396.72 
+Q 521.999828 396.72 893.502862 396.72 
+" style="fill: none; stroke: #686868; stroke-width: 0.8; stroke-linecap: round"/>
+    <path d="M 889.102862 394.52 
+L 893.502862 396.72 
+L 889.102862 398.92 
+" style="fill: none; stroke: #686868; stroke-width: 0.8; stroke-linecap: round"/>
+   </g>
+   <g id="text_15">
+    <text style="font-size: 10.5px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #686868" x="896.4" y="414" transform="rotate(-0 896.4 414)">Time (schematic, not to scale)</text>
+   </g>
+   <g id="text_16">
+    <text style="font-size: 12px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #202020" x="39.6" y="439.92" transform="rotate(-0 39.6 439.92)">During the switch, A supplies prefill and C serves decode.</text>
+   </g>
+   <g id="text_17">
+    <text style="font-size: 12px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #202020" x="39.6" y="467.28" transform="rotate(-0 39.6 467.28)">B keeps the same ranks, weights, communicator, CUDA graphs and KV registrations.</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p60c6061e90">
+   <rect x="0" y="0" width="936" height="489.6"/>
+  </clipPath>
+ </defs>
+</svg>
