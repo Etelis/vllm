@@ -121,6 +121,27 @@ def _make_worker(
     return worker, spec
 
 
+def _make_async_worker(rank: int = 0):
+    from vllm.distributed.kv_transfer.kv_connector.v1.offloading.worker import (
+        OffloadingConnectorWorker,
+    )
+
+    spec = MagicMock(spec=OffloadingSpec)
+    spec.replicated_layout = False
+    spec.config = MagicMock()
+    spec.config.parallel.rank = rank
+    spec.async_init_failed = False
+    worker = OffloadingConnectorWorker(
+        spec=spec,
+        vllm_config=_single_rank_vllm_config(NUM_KV_HEADS),
+        kv_cache_config=KVCacheConfig(
+            num_blocks=0, kv_cache_tensors=[], kv_cache_groups=[]
+        ),
+        async_init=True,
+    )
+    return worker, spec
+
+
 def _store_metadata(job_id: int) -> OffloadingConnectorMetadata:
     return OffloadingConnectorMetadata(
         load_jobs={},
@@ -186,6 +207,37 @@ class BareExternalOffloadingSpec(OffloadingSpec):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def test_async_worker_empty_steps_poll_until_ready():
+    worker, spec = _make_async_worker(rank=1)
+    initialized_worker = MagicMock()
+    spec.poll_async_init.side_effect = [None, initialized_worker]
+    metadata = _empty_metadata()
+    kv_caches = CanonicalKVCaches(tensors=[], group_data_refs=[])
+    worker._init_worker(kv_caches)
+    spec.start_async_init.assert_called_once_with(kv_caches)
+
+    worker.handle_preemptions(metadata)
+    worker.start_kv_transfers(metadata)
+    worker.prepare_store_kv(metadata)
+    assert worker.get_finished({"early-request"}) == (set(), set())
+    assert worker.build_connector_worker_meta() is None
+
+    ready = worker.build_connector_worker_meta()
+    assert ready is not None
+    assert ready.ready_ranks == {1}
+    assert worker.worker is initialized_worker
+    assert worker.build_connector_worker_meta() is None
+
+
+def test_async_worker_reraises_initialization_failure():
+    worker, spec = _make_async_worker()
+    spec.poll_async_init.return_value = None
+    spec.async_init_failed = True
+
+    with pytest.raises(RuntimeError, match="initialization failed"):
+        worker.build_connector_worker_meta()
 
 
 def test_prepare_store_kv_non_writer_marks_completed_without_submit():

@@ -84,6 +84,7 @@ class OffloadingWorkerMetadata(KVConnectorWorkerMetadata):
 
     completed_jobs: dict[int, int] = field(default_factory=dict)
     transfer_stats: TransferStats = field(default_factory=TransferStats)
+    ready_ranks: set[int] = field(default_factory=set)
 
     def mark_completed(self, job_id: int) -> None:
         """Record a transfer job completion from this worker."""
@@ -101,4 +102,5 @@ class OffloadingWorkerMetadata(KVConnectorWorkerMetadata):
         return OffloadingWorkerMetadata(
             completed_jobs=merged,
             transfer_stats=self.transfer_stats.aggregate(other.transfer_stats),
+            ready_ranks=self.ready_ranks | other.ready_ranks,
         )

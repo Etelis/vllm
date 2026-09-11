@@ -92,6 +92,74 @@ def _make_partial_tail_request(
     return request
 
 
+def test_async_init_keeps_early_requests_gpu_only():
+    vllm_config = _make_vllm_config()
+    kv_cache_config = _make_mamba_hybrid_kv_cache_config()
+    spec = MockOffloadingSpec(build_offloading_config(vllm_config, kv_cache_config))
+    spec.manager.has_pending_work.return_value = False
+    scheduler = OffloadingConnectorScheduler(
+        spec, vllm_config, kv_cache_config, async_init=True
+    )
+    request = MagicMock(request_id="early")
+
+    scheduler.on_new_request(request)
+
+    assert scheduler.get_num_new_matched_tokens(request, 0) == (0, False)
+    assert scheduler.has_pending_push_work()
+    assert "early" not in scheduler._req_status
+
+    output = SchedulerOutput.make_empty()
+    output.scheduled_new_reqs = [SimpleNamespace(req_id="early", block_ids=([7], [9]))]
+    scheduler._update_req_states(output)
+    assert scheduler._current_batch_allocated_block_ids == {7, 9}
+    scheduler._current_batch_allocated_block_ids.clear()
+    scheduler._block_id_to_pending_jobs[7] = {123}
+
+    metadata = scheduler.build_connector_meta(output)
+    assert metadata == OffloadingConnectorMetadata(
+        load_jobs={}, store_jobs={}, jobs_to_flush={123}
+    )
+    spec.manager.prepare_store.assert_not_called()
+
+    scheduler.update_connector_output(
+        KVConnectorOutput(
+            kv_connector_worker_meta=OffloadingWorkerMetadata(ready_ranks={0})
+        )
+    )
+    assert not scheduler.has_pending_push_work()
+    metadata = scheduler.build_connector_meta(output)
+    assert not metadata.load_jobs
+    assert not metadata.store_jobs
+    assert scheduler.request_finished(request) == (False, None)
+    assert "early" not in scheduler._ineligible_request_ids
+
+
+def test_request_queued_during_init_can_join_before_first_schedule():
+    vllm_config = _make_vllm_config()
+    kv_cache_config = _make_mamba_hybrid_kv_cache_config()
+    spec = MockOffloadingSpec(build_offloading_config(vllm_config, kv_cache_config))
+    scheduler = OffloadingConnectorScheduler(
+        spec, vllm_config, kv_cache_config, async_init=True
+    )
+    request = MagicMock()
+    request.request_id = "queued"
+    request.kv_transfer_params = None
+    request.block_hashes = []
+    request.skip_reading_prefix_cache = True
+
+    scheduler.on_new_request(request)
+    assert "queued" in scheduler._deferred_request_ids
+    scheduler.update_connector_output(
+        KVConnectorOutput(
+            kv_connector_worker_meta=OffloadingWorkerMetadata(ready_ranks={0})
+        )
+    )
+
+    assert scheduler.get_num_new_matched_tokens(request, 0) == (0, False)
+    assert "queued" in scheduler._req_status
+    assert "queued" not in scheduler._ineligible_request_ids
+
+
 def _reduce_kv_connector_stats(runner):
     reduced: dict[str, int | float] = {}
     for payload in runner.kv_connector_stats:
@@ -2197,6 +2265,8 @@ def test_pending_transfer_defers_prefix_lookup():
     """
     scheduler = object.__new__(OffloadingConnectorScheduler)
     scheduler.manager = MagicMock(spec=OffloadingManager)
+    scheduler._deferred_request_ids = set()
+    scheduler._ineligible_request_ids = set()
 
     request = SimpleNamespace(request_id="req-0")
     group_state = SimpleNamespace(block_ids=[1, 2, 3])

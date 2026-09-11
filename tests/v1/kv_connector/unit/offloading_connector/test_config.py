@@ -10,12 +10,16 @@ import torch
 
 from tests.v1.kv_connector.unit.offloading_connector.utils import MockOffloadingSpec
 from vllm.config import KVTransferConfig, ParallelConfig, VllmConfig
+from vllm.distributed.kv_transfer.kv_connector.v1 import KVConnectorRole
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.config import (
     build_offloading_config,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading.scheduler import (
     SchedulerOffloadConfig,
     is_store_reachable_swa_chunk,
+)
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading_connector import (
+    OffloadingConnector,
 )
 from vllm.platforms import current_platform
 from vllm.v1.kv_cache_interface import (
@@ -31,6 +35,7 @@ from vllm.v1.kv_cache_interface import (
     SlidingWindowSpec,
     UniformTypeKVCacheSpecs,
 )
+from vllm.v1.kv_offload.factory import OffloadingSpecFactory
 
 
 def _make_vllm_config(
@@ -750,3 +755,18 @@ def test_blocks_per_chunk_must_be_positive():
 
     with pytest.raises(ValueError, match="greater than 0"):
         build_offloading_config(config, _make_kv_cache_config())
+
+
+def test_async_init_rejects_external_launcher():
+    config = _make_vllm_config(
+        extra_config={"cpu_bytes_to_use": 1 << 20, "async_init": True}
+    )
+    config.parallel_config.distributed_executor_backend = "external_launcher"
+    spec = MagicMock(supports_async_init=True)
+
+    with (
+        patch.object(OffloadingSpecFactory, "create_spec", return_value=spec),
+        patch.object(current_platform, "is_cuda", return_value=True),
+        pytest.raises(ValueError, match="does not support external_launcher"),
+    ):
+        OffloadingConnector(config, KVConnectorRole.SCHEDULER, _make_kv_cache_config())

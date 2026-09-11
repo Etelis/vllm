@@ -386,6 +386,47 @@ def test_cpu_spec_create_worker_uses_mmap_on_cuda_alike(monkeypatch):
     assert worker_calls[0]["mmap_region"] is region
 
 
+def test_cpu_spec_async_init_pins_shared_region_incrementally(monkeypatch):
+    import vllm.v1.kv_offload.cpu.spec as cpu_spec_module
+
+    spec = _create_spec(
+        cpu_bytes_to_use=SharedOffloadRegion.BLOCK_SIZE_ALIGNMENT * 8,
+        worker_kv_bytes_per_block=SharedOffloadRegion.BLOCK_SIZE_ALIGNMENT,
+    )
+    assert isinstance(spec, CPUOffloadingSpec)
+    region = MagicMock()
+    monkeypatch.setattr(cpu_spec_module, "PIN_MEMORY", True)
+
+    assert spec._populate_and_pin(region) is region
+    region.populate.assert_called_once_with(spec.cpu_page_size_per_worker)
+    region.pin.assert_called_once_with(
+        chunk_size_bytes=cpu_spec_module._ASYNC_HOST_REGISTER_CHUNK_SIZE_BYTES
+    )
+
+
+def test_cpu_spec_defers_background_work_until_first_poll(monkeypatch):
+    import vllm.v1.kv_offload.cpu.spec as cpu_spec_module
+
+    spec = _create_spec(
+        cpu_bytes_to_use=SharedOffloadRegion.BLOCK_SIZE_ALIGNMENT * 8,
+        worker_kv_bytes_per_block=SharedOffloadRegion.BLOCK_SIZE_ALIGNMENT,
+    )
+    assert isinstance(spec, CPUOffloadingSpec)
+    region = MagicMock()
+    region_init = MagicMock()
+    region_init.poll.return_value = None
+    async_buffer = MagicMock(return_value=region_init)
+    monkeypatch.setattr(spec, "_get_worker_rank", MagicMock(return_value=0))
+    monkeypatch.setattr(spec, "_create_region", MagicMock(return_value=region))
+    monkeypatch.setattr(cpu_spec_module, "AsyncHostBuffer", async_buffer)
+
+    spec.start_async_init(MagicMock())
+    async_buffer.assert_not_called()
+
+    assert spec.poll_async_init() is None
+    async_buffer.assert_called_once()
+
+
 def test_cpu_spec_create_worker_uses_tensor_path_off_cuda_alike(monkeypatch):
     import vllm.v1.kv_offload.cpu.spec as cpu_spec_module
 

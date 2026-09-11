@@ -494,12 +494,18 @@ class OffloadingConnectorScheduler:
         spec: OffloadingSpec,
         vllm_config: VllmConfig,
         kv_cache_config: KVCacheConfig,
+        async_init: bool = False,
     ):
         self.config = SchedulerOffloadConfig.from_spec(
             spec, vllm_config, kv_cache_config
         )
         self.manager: OffloadingManager = spec.get_manager()
         self._connector_stats = OffloadingConnectorStats()
+        self._ready = not async_init
+        self._expected_ready_ranks = set(range(self.config.num_workers))
+        self._ready_ranks: set[int] = set()
+        self._deferred_request_ids: set[ReqId] = set()
+        self._ineligible_request_ids: set[ReqId] = set()
 
         full_attention_groups: list[int] = []
         sliding_window_groups: list[int] = []
@@ -921,8 +927,7 @@ class OffloadingConnectorScheduler:
             return None
         return complete_hit
 
-    def on_new_request(self, request: Request) -> None:
-        """Called when a new request is added to the scheduler."""
+    def _register_request(self, request: Request) -> None:
         req_context = _create_req_context(request)
         offloading_context = self.manager.on_new_request(req_context)
         req_status = RequestOffloadState(
@@ -932,6 +937,13 @@ class OffloadingConnectorScheduler:
             offloading_context=offloading_context,
         )
         self._req_status[request.request_id] = req_status
+
+    def on_new_request(self, request: Request) -> None:
+        """Called when a new request is added to the scheduler."""
+        if self._ready:
+            self._register_request(request)
+        else:
+            self._deferred_request_ids.add(request.request_id)
 
     def get_num_new_matched_tokens(
         self, request: Request, num_computed_tokens: int
@@ -955,7 +967,16 @@ class OffloadingConnectorScheduler:
                 - `True` if tokens will be loaded asynchronously
                   (between scheduler steps).
         """
-        req_status = self._req_status[request.request_id]
+        request_id = request.request_id
+        if request_id in self._deferred_request_ids:
+            self._deferred_request_ids.remove(request_id)
+            if self._ready:
+                self._register_request(request)
+            else:
+                self._ineligible_request_ids.add(request_id)
+        if request_id in self._ineligible_request_ids:
+            return 0, False
+        req_status = self._req_status[request_id]
         for group_state in req_status.group_states:
             group_state.block_ids.clear()
 
@@ -1111,6 +1132,13 @@ class OffloadingConnectorScheduler:
         new_block_ids_end: dict[str, tuple[int, ...]] = {}
 
         for req_id, new_block_id_groups, preempted in yield_req_data(scheduler_output):
+            if new_block_id_groups:
+                for new_blocks in new_block_id_groups:
+                    self._current_batch_allocated_block_ids.update(
+                        bid for bid in new_blocks if bid != 0
+                    )
+            if req_id in self._ineligible_request_ids:
+                continue
             req_status = self._req_status[req_id]
             req_status.update_offload_keys()
 
@@ -1125,11 +1153,6 @@ class OffloadingConnectorScheduler:
                         for grp_idx in self._sliding_window_groups
                     )
                 req_status.update_block_id_groups(new_block_id_groups)
-                for new_blocks in new_block_id_groups:
-                    for bid in new_blocks:
-                        if bid != 0:
-                            self._current_batch_allocated_block_ids.add(bid)
-
         for copy in scheduler_output.kv_cache_block_copies or ():
             self._current_batch_allocated_block_ids.add(copy.dst_block_id)
 
@@ -1236,7 +1259,8 @@ class OffloadingConnectorScheduler:
             if not entries:
                 continue
             req_status = self._req_status.get(req_id)
-            assert req_status is not None
+            if req_status is None:
+                continue
             boundaries = {boundary for _, _, boundary in entries}
             assert len(boundaries) == 1
             boundary = boundaries.pop()
@@ -1522,8 +1546,16 @@ class OffloadingConnectorScheduler:
     ) -> KVConnectorMetadata:
         self._update_req_states(scheduler_output)
         schedule_end_context = ScheduleEndContext(
-            new_req_ids=[req.req_id for req in scheduler_output.scheduled_new_reqs],
-            preempted_req_ids=scheduler_output.preempted_req_ids or (),
+            new_req_ids=[
+                req.req_id
+                for req in scheduler_output.scheduled_new_reqs
+                if req.req_id not in self._ineligible_request_ids
+            ],
+            preempted_req_ids=[
+                req_id
+                for req_id in scheduler_output.preempted_req_ids or ()
+                if req_id not in self._ineligible_request_ids
+            ],
         )
         self.manager.on_schedule_end(schedule_end_context)
 
@@ -1579,7 +1611,7 @@ class OffloadingConnectorScheduler:
         While True, build_connector_meta() and update_connector_output()
         continue to be called even when no requests are scheduled.
         """
-        return bool(self._jobs) or self.manager.has_pending_work()
+        return not self._ready or bool(self._jobs) or self.manager.has_pending_work()
 
     def update_connector_output(self, connector_output: KVConnectorOutput):
         """
@@ -1593,6 +1625,16 @@ class OffloadingConnectorScheduler:
         if not isinstance(meta, OffloadingWorkerMetadata):
             assert meta is None
             meta = OffloadingWorkerMetadata()
+        if not self._ready and meta.ready_ranks:
+            unexpected_ranks = meta.ready_ranks - self._expected_ready_ranks
+            if unexpected_ranks:
+                raise RuntimeError(f"Unexpected ready ranks: {unexpected_ranks}")
+            self._ready_ranks.update(meta.ready_ranks)
+            if self._ready_ranks == self._expected_ready_ranks:
+                self._ready = True
+                logger.info(
+                    "Asynchronous KV offload initialization completed on all workers"
+                )
         if not meta.transfer_stats.is_empty():
             transfer_stats = OffloadingConnectorStats()
             if not meta.transfer_stats.load.is_empty():
@@ -1690,7 +1732,15 @@ class OffloadingConnectorScheduler:
             Optional KVTransferParams to be included in the request outputs
             returned by the engine.
         """
-        req_status = self._req_status.get(request.request_id)
+        request_id = request.request_id
+        if request_id in self._deferred_request_ids:
+            self._deferred_request_ids.discard(request_id)
+            return False, None
+        if request_id in self._ineligible_request_ids:
+            self._ineligible_request_ids.discard(request_id)
+            return False, None
+
+        req_status = self._req_status.get(request_id)
 
         if req_status is None:
             # Untracked request (offloading never started): no in-flight jobs,

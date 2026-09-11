@@ -51,3 +51,12 @@ def test_aggregate_transfer_stats():
     assert result.transfer_stats.load.bytes == 30
     assert result.transfer_stats.load.time == 1.5
     assert result.transfer_stats.load.sizes == [10, 20, 30]
+
+
+def test_aggregate_ready_ranks():
+    meta1 = OffloadingWorkerMetadata(ready_ranks={0, 2})
+    meta2 = OffloadingWorkerMetadata(ready_ranks={1, 2})
+
+    result = meta1.aggregate(meta2)
+
+    assert result.ready_ranks == {0, 1, 2}

@@ -37,6 +37,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.offloading.worker import (
     OffloadingConnectorWorker,
 )
 from vllm.forward_context import ForwardContext
+from vllm.platforms import current_platform
 from vllm.v1.attention.backend import AttentionMetadata
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -64,16 +65,29 @@ class OffloadingConnector(KVConnectorBase_V1, SupportsHMA):
         offloading_config = build_offloading_config(vllm_config, kv_cache_config)
         self._canonical_layout = offloading_config.canonical_layout
         spec = OffloadingSpecFactory.create_spec(offloading_config)
+        async_init = offloading_config.extra_config.get("async_init", False)
+        if not isinstance(async_init, bool):
+            raise ValueError("async_init must be a boolean")
+        if async_init:
+            if not spec.supports_async_init:
+                raise ValueError(f"{type(spec).__name__} does not support async_init")
+            if not current_platform.is_cuda():
+                raise ValueError("async_init is only supported on CUDA")
+            if (
+                vllm_config.parallel_config.distributed_executor_backend
+                == "external_launcher"
+            ):
+                raise ValueError("async_init does not support external_launcher")
 
         self.connector_scheduler: OffloadingConnectorScheduler | None = None
         self.connector_worker: OffloadingConnectorWorker | None = None
         if role == KVConnectorRole.SCHEDULER:
             self.connector_scheduler = OffloadingConnectorScheduler(
-                spec, vllm_config, kv_cache_config
+                spec, vllm_config, kv_cache_config, async_init=async_init
             )
         elif role == KVConnectorRole.WORKER:
             self.connector_worker = OffloadingConnectorWorker(
-                spec, vllm_config, kv_cache_config
+                spec, vllm_config, kv_cache_config, async_init=async_init
             )
 
     def shutdown(self) -> None:

@@ -43,11 +43,14 @@ class OffloadingConnectorWorker:
         spec: OffloadingSpec,
         vllm_config: "VllmConfig",
         kv_cache_config: KVCacheConfig,
+        async_init: bool = False,
     ):
         self.spec = spec
         self.vllm_config = vllm_config
         self.kv_cache_config = kv_cache_config
         self.worker: OffloadingWorker | None = None
+        self._async_init = async_init
+        self._ready_reported = False
         # Non-writers still ack: pending_count waits for world_size per job.
         self._is_store_writer = (
             not self.spec.replicated_layout or self.spec.config.parallel.rank == 0
@@ -61,7 +64,10 @@ class OffloadingConnectorWorker:
         self._connector_worker_meta = OffloadingWorkerMetadata()
 
     def _init_worker(self, kv_caches: CanonicalKVCaches) -> None:
-        self.worker = self.spec.get_worker(kv_caches)
+        if self._async_init:
+            self.spec.start_async_init(kv_caches)
+        else:
+            self.worker = self.spec.get_worker(kv_caches)
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         kv_cache_config = self.kv_cache_config
@@ -206,7 +212,11 @@ class OffloadingConnectorWorker:
         self._init_worker(canonical_kv_caches)
 
     def handle_preemptions(self, kv_connector_metadata: OffloadingConnectorMetadata):
-        assert self.worker is not None
+        if self.worker is None:
+            assert not kv_connector_metadata.load_jobs
+            assert not kv_connector_metadata.store_jobs
+            assert not kv_connector_metadata.jobs_to_flush
+            return
 
         # Pop jobs_to_flush from store_jobs into _unsubmitted_store_jobs
         # so the existing submission loop below submits them before wait().
@@ -233,7 +243,10 @@ class OffloadingConnectorWorker:
             self.worker.wait(kv_connector_metadata.jobs_to_flush)
 
     def start_kv_transfers(self, metadata: OffloadingConnectorMetadata):
-        assert self.worker is not None
+        if self.worker is None:
+            assert not metadata.load_jobs
+            assert not metadata.store_jobs
+            return
         for job_id, src_spec, dst_spec in self._unsubmitted_store_jobs:
             success = self.worker.submit_store(job_id, src_spec, dst_spec)
             assert success
@@ -246,6 +259,9 @@ class OffloadingConnectorWorker:
             assert success
 
     def prepare_store_kv(self, metadata: OffloadingConnectorMetadata):
+        if self.worker is None:
+            assert not metadata.store_jobs
+            return
         for job_id, entry in metadata.store_jobs.items():
             if not self._is_store_writer:
                 # Gate before queueing: no _unsubmitted_store_jobs entry.
@@ -269,7 +285,8 @@ class OffloadingConnectorWorker:
             finished_recving so the base scheduler can resume requests
             blocked on remote KV (and free aborted-during-load reqs).
         """
-        assert self.worker is not None
+        if self.worker is None:
+            return set(), set()
         finished_recving: set[str] = set()
         for transfer_result in self.worker.get_finished():
             # we currently do not support job failures
@@ -296,9 +313,25 @@ class OffloadingConnectorWorker:
 
         return set(), finished_recving
 
+    def _poll_async_init(self) -> None:
+        if self.worker is None:
+            self.worker = self.spec.poll_async_init()
+            if self.worker is None and self.spec.async_init_failed:
+                raise RuntimeError("Asynchronous KV offload initialization failed")
+
     def build_connector_worker_meta(self) -> OffloadingWorkerMetadata | None:
         """Return completed transfer job IDs since the last call."""
-        if not self._connector_worker_meta.completed_jobs:
+        if self._async_init and self.worker is None:
+            self._poll_async_init()
+        if self.worker is not None and self._async_init and not self._ready_reported:
+            self._connector_worker_meta.ready_ranks.add(self.spec.config.parallel.rank)
+            self._ready_reported = True
+
+        if (
+            not self._connector_worker_meta.completed_jobs
+            and not self._connector_worker_meta.ready_ranks
+            and self._connector_worker_meta.transfer_stats.is_empty()
+        ):
             return None
         meta = self._connector_worker_meta
         self._connector_worker_meta = OffloadingWorkerMetadata()
@@ -308,5 +341,8 @@ class OffloadingConnectorWorker:
         self._unsubmitted_store_jobs.clear()
         self._load_jobs.clear()
         self._connector_worker_meta = OffloadingWorkerMetadata()
+        if self._async_init:
+            # No-op once a worker adopted the buffers; it owns them from then on.
+            self.spec.close_async_init()
         if self.worker is not None:
             self.worker.shutdown()
