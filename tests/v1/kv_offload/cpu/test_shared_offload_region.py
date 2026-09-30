@@ -516,8 +516,9 @@ def test_madvise_success_selects_madvise_population(iid, monkeypatch):
         # 1 probe (PAGESIZE) + N populate calls (one per chunk per worker column).
         expected_populate = num_chunks  # ranked path: one call per chunk
         mmap_id = madvise_calls[0][2]
-        assert madvise_calls == [
-            (0, mmap.PAGESIZE, mmap_id),
+        # The probe runs first; populate threads may finish in any order.
+        assert madvise_calls[0] == (0, mmap.PAGESIZE, mmap_id)
+        assert sorted(madvise_calls[1:]) == [
             (mmap.PAGESIZE, mmap.PAGESIZE, mmap_id),
             (3 * mmap.PAGESIZE, mmap.PAGESIZE, mmap_id),
             (5 * mmap.PAGESIZE, mmap.PAGESIZE, mmap_id),
@@ -565,7 +566,7 @@ def test_madvise_einval_selects_fallback_for_ranked_region(iid, monkeypatch):
     monkeypatch.setattr(sor, "_fallback_populate_write", _spy_fallback)
 
     with _region(iid, num_chunks=3, num_workers=2, rank=1):
-        assert fallback_calls == [
+        assert sorted(fallback_calls) == [
             (mmap.PAGESIZE, mmap.PAGESIZE),
             (3 * mmap.PAGESIZE, mmap.PAGESIZE),
             (5 * mmap.PAGESIZE, mmap.PAGESIZE),
@@ -619,6 +620,31 @@ def test_fallback_populate_write_preserves_bytes_and_faults_pages():
 
         assert _page_residency(mmap_obj, size) == [True, True, True]
         assert mmap_obj[0] == 0xAB
+    finally:
+        mmap_obj.close()
+
+
+def test_populate_threads_fault_every_page():
+    """Threaded MADV_POPULATE_WRITE faults in every page of every range."""
+    from vllm.v1.kv_offload.cpu import shared_offload_region as sor
+
+    num_pages = 16
+    size = num_pages * mmap.PAGESIZE
+    mmap_obj = mmap.mmap(
+        -1, size, flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE
+    )
+    try:
+        if any(_page_residency(mmap_obj, size)):
+            pytest.skip("a fresh anonymous mapping is already resident")
+        ranges = [(i * mmap.PAGESIZE, mmap.PAGESIZE) for i in range(num_pages)]
+        try:
+            sor._populate(mmap_obj, sor._madvise_populate_write, ranges)
+        except OSError as e:
+            if e.errno == errno.EINVAL:
+                pytest.skip("MADV_POPULATE_WRITE is unsupported")
+            raise
+
+        assert all(_page_residency(mmap_obj, size))
     finally:
         mmap_obj.close()
 

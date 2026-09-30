@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import contextlib
+import ctypes
 import errno
+import functools
 import mmap
 import os
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import torch
@@ -21,6 +24,10 @@ logger = init_logger(__name__)
 
 # MADV_POPULATE_WRITE was added in Linux 5.14 (value 23).
 _MADV_POPULATE_WRITE = getattr(mmap, "MADV_POPULATE_WRITE", 23)
+# Pre-faulting is kernel page-fault work; a few threads on disjoint ranges
+# overlap it.
+_POPULATE_THREADS = min(4, os.cpu_count() or 1)
+_POPULATE_PIECE_BYTES = 1 << 30
 
 
 def _wait_for_file_size(fd: int, expected_size: int, timeout: float = 30.0) -> None:
@@ -40,8 +47,21 @@ def _wait_for_file_size(fd: int, expected_size: int, timeout: float = 30.0) -> N
         time.sleep(0.005)
 
 
+@functools.cache
+def _libc_madvise() -> Callable[[int, int, int], int]:
+    madvise = ctypes.CDLL(None, use_errno=True).madvise
+    madvise.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+    madvise.restype = ctypes.c_int
+    return madvise
+
+
 def _madvise_populate_write(mmap_obj: mmap.mmap, offset: int, length: int) -> None:
-    mmap_obj.madvise(_MADV_POPULATE_WRITE, offset, length)
+    # Called through ctypes, which releases the GIL (mmap.madvise holds it),
+    # so populate threads fault pages concurrently.
+    address = ctypes.addressof(ctypes.c_char.from_buffer(mmap_obj, offset))
+    if _libc_madvise()(address, length, _MADV_POPULATE_WRITE) != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
 
 
 def _fallback_populate_write(mmap_obj: mmap.mmap, offset: int, length: int) -> None:
@@ -67,6 +87,37 @@ def _get_populate_write_fn(
         )
         return _fallback_populate_write
     return _madvise_populate_write
+
+
+def _populate(
+    mmap_obj: mmap.mmap,
+    populate_write_fn: Callable[[mmap.mmap, int, int], None],
+    ranges: list[tuple[int, int]],
+) -> None:
+    """Pre-fault (offset, length) ranges, each thread taking a contiguous run."""
+
+    def run(group: list[tuple[int, int]]) -> None:
+        for offset, length in group:
+            populate_write_fn(mmap_obj, offset, length)
+
+    num_threads = min(_POPULATE_THREADS, len(ranges))
+    if num_threads <= 1:
+        run(ranges)
+        return
+    step = cdiv(len(ranges), num_threads)
+    with ThreadPoolExecutor(num_threads) as pool:
+        futures = [
+            pool.submit(run, ranges[i : i + step]) for i in range(0, len(ranges), step)
+        ]
+        for future in futures:
+            future.result()
+
+
+def _piece_ranges(start: int, end: int) -> list[tuple[int, int]]:
+    return [
+        (offset, min(_POPULATE_PIECE_BYTES, end - offset))
+        for offset in range(start, end, _POPULATE_PIECE_BYTES)
+    ]
 
 
 class SharedOffloadRegion:
@@ -158,8 +209,11 @@ class SharedOffloadRegion:
             )
 
             if populate_only_on_creator and self._creator:
-                populate_write_fn = _get_populate_write_fn(self.mmap_obj)
-                populate_write_fn(self.mmap_obj, 0, self.total_size_bytes)
+                _populate(
+                    self.mmap_obj,
+                    _get_populate_write_fn(self.mmap_obj),
+                    _piece_ranges(0, self.total_size_bytes),
+                )
         except Exception:
             if self._creator:
                 with contextlib.suppress(FileNotFoundError):
@@ -223,8 +277,7 @@ class SharedOffloadRegion:
             start = min(index * shard_size, self.total_size_bytes)
             end = min(start + shard_size, self.total_size_bytes)
             _t0 = time.perf_counter()
-            if end > start:
-                populate_write_fn(self.mmap_obj, start, end - start)
+            _populate(self.mmap_obj, populate_write_fn, _piece_ranges(start, end))
             logger.debug(
                 "MADV_POPULATE_WRITE shard %d/%d: %.3f s",
                 index,
@@ -236,21 +289,26 @@ class SharedOffloadRegion:
             worker_offset = rank * cpu_page_size
             _t0 = time.perf_counter()
             page_size = self.page_size
+            ranges = []
             for chunk in range(num_chunks):
                 raw_offset = chunk * self._row_stride + worker_offset
                 aligned_offset = (raw_offset // page_size) * page_size
                 end = raw_offset + cpu_page_size
-                aligned_length = end - aligned_offset
-                populate_write_fn(self.mmap_obj, aligned_offset, aligned_length)
+                ranges.append((aligned_offset, end - aligned_offset))
+            _populate(self.mmap_obj, populate_write_fn, ranges)
             logger.debug(
                 "MADV_POPULATE_WRITE loop: %d chunks in %.3f s",
                 num_chunks,
                 time.perf_counter() - _t0,
             )
         else:
-            # No rank — populate the entire shared region in one call.
+            # No rank — populate the entire shared region.
             _t0 = time.perf_counter()
-            populate_write_fn(self.mmap_obj, 0, self.total_size_bytes)
+            _populate(
+                self.mmap_obj,
+                populate_write_fn,
+                _piece_ranges(0, self.total_size_bytes),
+            )
             logger.debug(
                 "MADV_POPULATE_WRITE entire region: %.3f s", time.perf_counter() - _t0
             )
