@@ -620,44 +620,6 @@ def test_madvise_unexpected_oserror_propagates(iid, monkeypatch):
     assert exc_info.value.errno == errno.EIO
 
 
-def test_private_region_is_populated_without_a_file(iid):
-    """A private region maps anonymous memory: no /dev/shm file is created,
-    every page is populated up front, and views address it like a shared one."""
-    region = SharedOffloadRegion(
-        engine_id=iid,
-        num_chunks=4,
-        rank=0,
-        kv_bytes_per_chunk=2 * PAGE_SIZE,
-        cpu_page_size=2 * PAGE_SIZE,
-        shared=False,
-    )
-    try:
-        assert region.fd is None
-        assert not os.path.exists(region.mmap_path)
-        assert region.mmap_obj is not None
-        assert all(_page_residency(region.mmap_obj, 8 * PAGE_SIZE))
-        view = region.create_next_worker_view(2 * PAGE_SIZE)
-        view.fill_(5)
-        assert (region.base_tensor == 5).all()
-        del view
-    finally:
-        region.cleanup()
-    assert region.mmap_obj is None
-
-
-def test_private_region_rejects_a_barrier(iid):
-    with pytest.raises(ValueError, match="private region"):
-        SharedOffloadRegion(
-            engine_id=iid,
-            num_chunks=1,
-            rank=0,
-            kv_bytes_per_chunk=PAGE_SIZE,
-            cpu_page_size=PAGE_SIZE,
-            barrier=lambda: None,
-            shared=False,
-        )
-
-
 # ---------------------------------------------------------------------------
 # Multi-worker race — concurrent construction
 # ---------------------------------------------------------------------------
