@@ -24,9 +24,7 @@ logger = init_logger(__name__)
 
 # MADV_POPULATE_WRITE was added in Linux 5.14 (value 23).
 _MADV_POPULATE_WRITE = getattr(mmap, "MADV_POPULATE_WRITE", 23)
-# Pre-faulting is kernel page-fault work; a few threads on disjoint ranges
-# overlap it.
-_POPULATE_THREADS = min(4, os.cpu_count() or 1)
+_POPULATE_THREADS = 4
 _POPULATE_PIECE_BYTES = 1 << 30
 
 
@@ -51,13 +49,11 @@ def _wait_for_file_size(fd: int, expected_size: int, timeout: float = 30.0) -> N
 def _libc_madvise() -> Callable[[int, int, int], int]:
     madvise = ctypes.CDLL(None, use_errno=True).madvise
     madvise.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
-    madvise.restype = ctypes.c_int
     return madvise
 
 
 def _madvise_populate_write(mmap_obj: mmap.mmap, offset: int, length: int) -> None:
-    # Called through ctypes, which releases the GIL (mmap.madvise holds it),
-    # so populate threads fault pages concurrently.
+    # Unlike mmap.madvise, a ctypes call releases the GIL, so threads overlap.
     address = ctypes.addressof(ctypes.c_char.from_buffer(mmap_obj, offset))
     if _libc_madvise()(address, length, _MADV_POPULATE_WRITE) != 0:
         err = ctypes.get_errno()
@@ -95,25 +91,17 @@ def _populate(
     ranges: list[tuple[int, int]],
 ) -> None:
     """Pre-fault (offset, length) ranges, each thread taking a contiguous run."""
+    step = max(1, cdiv(len(ranges), _POPULATE_THREADS))
 
-    def run(group: list[tuple[int, int]]) -> None:
-        for offset, length in group:
+    def run(first: int) -> None:
+        for offset, length in ranges[first : first + step]:
             populate_write_fn(mmap_obj, offset, length)
 
-    num_threads = min(_POPULATE_THREADS, len(ranges))
-    if num_threads <= 1:
-        run(ranges)
-        return
-    step = cdiv(len(ranges), num_threads)
-    with ThreadPoolExecutor(num_threads) as pool:
-        futures = [
-            pool.submit(run, ranges[i : i + step]) for i in range(0, len(ranges), step)
-        ]
-        for future in futures:
-            future.result()
+    with ThreadPoolExecutor(_POPULATE_THREADS) as pool:
+        list(pool.map(run, range(0, len(ranges), step)))
 
 
-def _whole_region_ranges(size: int) -> list[tuple[int, int]]:
+def _pieces(size: int) -> list[tuple[int, int]]:
     return [
         (offset, min(_POPULATE_PIECE_BYTES, size - offset))
         for offset in range(0, size, _POPULATE_PIECE_BYTES)
@@ -205,10 +193,9 @@ class SharedOffloadRegion:
             )
 
             if populate_only_on_creator and self._creator:
+                populate_write_fn = _get_populate_write_fn(self.mmap_obj)
                 _populate(
-                    self.mmap_obj,
-                    _get_populate_write_fn(self.mmap_obj),
-                    _whole_region_ranges(self.total_size_bytes),
+                    self.mmap_obj, populate_write_fn, _pieces(self.total_size_bytes)
                 )
         except Exception:
             if self._creator:
@@ -287,11 +274,7 @@ class SharedOffloadRegion:
         else:
             # No rank — populate the entire shared region.
             _t0 = time.perf_counter()
-            _populate(
-                self.mmap_obj,
-                populate_write_fn,
-                _whole_region_ranges(self.total_size_bytes),
-            )
+            _populate(self.mmap_obj, populate_write_fn, _pieces(self.total_size_bytes))
             logger.debug(
                 "MADV_POPULATE_WRITE entire region: %.3f s", time.perf_counter() - _t0
             )
