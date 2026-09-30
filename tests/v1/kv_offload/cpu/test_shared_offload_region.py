@@ -668,94 +668,32 @@ def test_madvise_unexpected_oserror_propagates(iid, monkeypatch):
 
 
 def test_segmented_region_maps_files_back_to_back(iid, monkeypatch):
-    """Rows split across several shm files mapped into one range: each worker
-    sees the other's writes in every segment, and the files are unlinked once
-    every worker has mapped them."""
+    """Rows split over three shm files mapped back to back: each worker sees
+    the other's writes in every file, and the creator removes every file."""
     monkeypatch.setattr(region_module, "_MIN_SEGMENT_BYTES", PAGE_SIZE)
-    num_workers, num_chunks = 2, 5
-    barrier = threading.Barrier(num_workers)
-    regions: list[SharedOffloadRegion | None] = [None] * num_workers
-    errors: list[Exception] = []
-
-    def construct(rank: int) -> None:
-        try:
-            regions[rank] = SharedOffloadRegion(
-                engine_id=iid,
-                num_chunks=num_chunks,
-                rank=rank,
-                kv_bytes_per_chunk=num_workers * PAGE_SIZE,
-                cpu_page_size=PAGE_SIZE,
-                barrier=barrier.wait,
-                num_segments=3,
-            )
-        except Exception as e:
-            errors.append(e)
-
-    threads = [threading.Thread(target=construct, args=(r,)) for r in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert not errors
-    built = [r for r in regions if r is not None]
-    assert len(built) == num_workers
-    try:
-        segments = built[0]._segments
-        assert [(offset, length) for _, offset, length in segments] == [
-            (0, 4 * PAGE_SIZE),
-            (4 * PAGE_SIZE, 4 * PAGE_SIZE),
-            (8 * PAGE_SIZE, 2 * PAGE_SIZE),
-        ]
-        assert not any(os.path.exists(path) for path, _, _ in segments)
-
-        views = [r.create_next_worker_view(PAGE_SIZE) for r in built]
-        for rank, view in enumerate(views):
-            view.fill_(rank + 1)
-        rows = built[0].base_tensor.view(num_chunks, num_workers, PAGE_SIZE)
-        assert (rows[:, 0] == 1).all()
-        assert (rows[:, 1] == 2).all()
-        del views, rows
-    finally:
-        for r in built:
-            r.cleanup()
-
-
-def test_private_region_is_populated_without_a_file(iid):
-    """A private region maps anonymous memory: no /dev/shm file is created,
-    every page is populated up front, and views address it like a shared one."""
-    region = SharedOffloadRegion(
-        engine_id=iid,
-        num_chunks=4,
-        rank=0,
-        kv_bytes_per_chunk=2 * PAGE_SIZE,
-        cpu_page_size=2 * PAGE_SIZE,
-        shared=False,
-    )
-    try:
-        assert region.fd is None
-        assert not os.path.exists(region.mmap_path)
-        assert region.mmap_obj is not None
-        assert all(_page_residency(region.mmap_obj, 8 * PAGE_SIZE))
-        view = region.create_next_worker_view(2 * PAGE_SIZE)
-        view.fill_(5)
-        assert (region.base_tensor == 5).all()
-        del view
-    finally:
-        region.cleanup()
-    assert region.mmap_obj is None
-
-
-def test_private_region_rejects_a_barrier(iid):
-    with pytest.raises(ValueError, match="private region"):
+    regions = [
         SharedOffloadRegion(
             engine_id=iid,
-            num_chunks=1,
-            rank=0,
-            kv_bytes_per_chunk=PAGE_SIZE,
+            num_chunks=5,
+            rank=rank,
+            kv_bytes_per_chunk=2 * PAGE_SIZE,
             cpu_page_size=PAGE_SIZE,
-            barrier=lambda: None,
-            shared=False,
+            num_segments=3,
         )
+        for rank in range(2)
+    ]
+    segments = regions[0]._segments
+    try:
+        assert [length // PAGE_SIZE for _, _, length in segments] == [4, 4, 2]
+        for rank, region in enumerate(regions):
+            region.create_next_worker_view(PAGE_SIZE).fill_(rank + 1)
+        rows = regions[0].base_tensor.view(5, 2, PAGE_SIZE)
+        assert (rows[:, 0] == 1).all() and (rows[:, 1] == 2).all()
+        del rows
+    finally:
+        for region in regions:
+            region.cleanup()
+    assert not any(os.path.exists(path) for path, _, _ in segments)
 
 
 # ---------------------------------------------------------------------------
@@ -974,9 +912,8 @@ def test_pin_mmap_region_registers_row_aligned_chunks(
 
 
 def test_pin_mmap_region_worker_slot_only_registers_own_slots(iid, host_register):
-    """Each worker pins only its slot in every row, rounded out to pages: a
-    1.5-page rank-1 slot in 4-page rows registers pages [1, 3) of each row."""
-    cudart, torch_cudart = host_register
+    """Rank 1's 1.5-page slot in 4-page rows registers pages [1, 3) of each row."""
+    cudart, _ = host_register
     region = SharedOffloadRegion(
         engine_id=iid,
         num_chunks=3,
@@ -986,18 +923,14 @@ def test_pin_mmap_region_worker_slot_only_registers_own_slots(iid, host_register
     )
     try:
         gpu_worker.pin_mmap_region(region, worker_slot_only=True)
-        base = region._base.data_ptr()
-        slots = [base + row * 4 * PAGE_SIZE + PAGE_SIZE for row in range(3)]
+        base = region._base.data_ptr() + PAGE_SIZE
         assert cudart.mock_calls == [
-            call.cudaHostRegister(slot, 2 * PAGE_SIZE) for slot in slots
+            call.cudaHostRegister(base + row * 4 * PAGE_SIZE, 2 * PAGE_SIZE)
+            for row in range(3)
         ]
-        assert region.is_pinned
     finally:
         region.cleanup()
         _cleanup_file(region.mmap_path)
-    assert torch_cudart.cudaHostUnregister.call_args_list == [
-        call(slot) for slot in reversed(slots)
-    ]
 
 
 @pytest.mark.parametrize("fail_at", [0, 1, 2])

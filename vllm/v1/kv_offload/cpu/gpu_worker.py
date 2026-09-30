@@ -196,54 +196,15 @@ def _canonical_block_sizes(
 
 # Bound registration size to avoid driver limits on large host allocations.
 MAX_HOST_REGISTER_CHUNK_BYTES = 64 * 1024**3
-# Above this many rows, per-slot registration costs more in calls than it saves.
+# Per-slot registration stops paying off beyond this many rows.
 MAX_HOST_REGISTER_SLOTS = 1 << 16
-
-
-def _host_register_ranges(
-    region: SharedOffloadRegion, worker_slot_only: bool
-) -> list[tuple[int, int]]:
-    base_ptr = region._base.data_ptr()
-    page_size = region.page_size
-    stride = region._row_stride
-    slot_size = region.cpu_page_size
-    if (
-        worker_slot_only
-        and region.rank is not None
-        and stride - slot_size >= page_size
-        and region.num_chunks <= MAX_HOST_REGISTER_SLOTS
-    ):
-        # Each worker pins only its own slot per row instead of every worker
-        # pinning the whole region. Rounding a slot out to page boundaries
-        # cannot reach the next slot of the same worker, which is at least a
-        # page away.
-        ranges = []
-        for chunk in range(region.num_chunks):
-            start = chunk * stride + region.rank * slot_size
-            aligned_start = start // page_size * page_size
-            aligned_end = round_up(start + slot_size, page_size)
-            ranges.append((base_ptr + aligned_start, aligned_end - aligned_start))
-        return ranges
-
-    # Chunks end on block-row boundaries, which are page aligned, so neither the
-    # driver's page rounding nor any single block transfer straddles two
-    # registrations.
-    total_size = region.total_size_bytes
-    chunk_size = max(MAX_HOST_REGISTER_CHUNK_BYTES // stride, 1) * stride
-    return [
-        (base_ptr + offset, min(chunk_size, total_size - offset))
-        for offset in range(0, total_size, chunk_size)
-    ]
 
 
 def pin_mmap_region(
     region: SharedOffloadRegion, worker_slot_only: bool = False
 ) -> None:
-    """Register the region, rolling back on failure.
-
-    With ``worker_slot_only``, register only this worker's slot in each row,
-    for workers that never touch other workers' slots.
-    """
+    """Register row-aligned chunks, or just this worker's slot of each row,
+    rolling back on failure."""
     if not current_platform.is_cuda_alike():
         logger.info(
             "Skipping mmap host registration on %s; cudaHostRegister is only "
@@ -266,12 +227,34 @@ def pin_mmap_region(
 
     base_ptr = region._base.data_ptr()
     total_size = region.total_size_bytes
-    ranges = _host_register_ranges(region, worker_slot_only)
+    # Chunks end on block-row boundaries, which are page aligned, so neither the
+    # driver's page rounding nor any single block transfer straddles two
+    # registrations.
+    rows_per_chunk = max(MAX_HOST_REGISTER_CHUNK_BYTES // region._row_stride, 1)
+    chunk_size = rows_per_chunk * region._row_stride
+    ranges = [
+        (offset, min(chunk_size, total_size - offset))
+        for offset in range(0, total_size, chunk_size)
+    ]
+    stride, slot, page = region._row_stride, region.cpu_page_size, region.page_size
+    if (
+        worker_slot_only
+        and region.rank is not None
+        and stride - slot >= page
+        and region.num_chunks <= MAX_HOST_REGISTER_SLOTS
+    ):
+        # Round each slot out to pages; the worker's next slot is a page away.
+        ranges = []
+        for row in range(region.num_chunks):
+            start = row * stride + region.rank * slot
+            aligned = start - start % page
+            ranges.append((aligned, round_up(start + slot, page) - aligned))
 
     # Register, drain and roll back through the same runtime handle, so a
     # failed chunk leaves neither a pending error nor a partly pinned region.
     addresses: list[int] = []
-    for address, size in ranges:
+    for offset, size in ranges:
+        address = base_ptr + offset
         result = cudart.cudaHostRegister(address, size)
         if result == 0:
             addresses.append(address)
@@ -281,7 +264,7 @@ def pin_mmap_region(
             "cudaHostRegister failed for rank=%d at %.2f of %.2f GB (code=%d); "
             "the offload region stays pageable",
             rank,
-            (address - base_ptr) / 1e9,
+            offset / 1e9,
             total_size / 1e9,
             result,
         )
