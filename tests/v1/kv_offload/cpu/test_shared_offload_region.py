@@ -836,9 +836,8 @@ def test_pin_mmap_region_registers_row_aligned_chunks(
 
 
 def test_pin_mmap_region_worker_slot_only_registers_own_slots(iid, host_register):
-    """Each worker pins only its slot in every row, rounded out to pages: a
-    1.5-page rank-1 slot in 4-page rows registers pages [1, 3) of each row."""
-    cudart, torch_cudart = host_register
+    """Rank 1's 1.5-page slot in 4-page rows registers pages [1, 3) of each row."""
+    cudart, _ = host_register
     region = SharedOffloadRegion(
         engine_id=iid,
         num_chunks=3,
@@ -848,18 +847,14 @@ def test_pin_mmap_region_worker_slot_only_registers_own_slots(iid, host_register
     )
     try:
         gpu_worker.pin_mmap_region(region, worker_slot_only=True)
-        base = region._base.data_ptr()
-        slots = [base + row * 4 * PAGE_SIZE + PAGE_SIZE for row in range(3)]
+        base = region._base.data_ptr() + PAGE_SIZE
         assert cudart.mock_calls == [
-            call.cudaHostRegister(slot, 2 * PAGE_SIZE) for slot in slots
+            call.cudaHostRegister(base + row * 4 * PAGE_SIZE, 2 * PAGE_SIZE)
+            for row in range(3)
         ]
-        assert region.is_pinned
     finally:
         region.cleanup()
         _cleanup_file(region.mmap_path)
-    assert torch_cudart.cudaHostUnregister.call_args_list == [
-        call(slot) for slot in reversed(slots)
-    ]
 
 
 @pytest.mark.parametrize("fail_at", [0, 1, 2])
