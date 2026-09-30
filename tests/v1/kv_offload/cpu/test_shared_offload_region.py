@@ -620,6 +620,59 @@ def test_madvise_unexpected_oserror_propagates(iid, monkeypatch):
     assert exc_info.value.errno == errno.EIO
 
 
+def test_segmented_region_maps_files_back_to_back(iid, monkeypatch):
+    """Rows split across several shm files mapped into one range: each worker
+    sees the other's writes in every segment, and the files are unlinked once
+    every worker has mapped them."""
+    monkeypatch.setattr(region_module, "_MIN_SEGMENT_BYTES", PAGE_SIZE)
+    num_workers, num_chunks = 2, 5
+    barrier = threading.Barrier(num_workers)
+    regions: list[SharedOffloadRegion | None] = [None] * num_workers
+    errors: list[Exception] = []
+
+    def construct(rank: int) -> None:
+        try:
+            regions[rank] = SharedOffloadRegion(
+                engine_id=iid,
+                num_chunks=num_chunks,
+                rank=rank,
+                kv_bytes_per_chunk=num_workers * PAGE_SIZE,
+                cpu_page_size=PAGE_SIZE,
+                barrier=barrier.wait,
+                num_segments=3,
+            )
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=construct, args=(r,)) for r in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    built = [r for r in regions if r is not None]
+    assert len(built) == num_workers
+    try:
+        segments = built[0]._segments
+        assert [(offset, length) for _, offset, length in segments] == [
+            (0, 4 * PAGE_SIZE),
+            (4 * PAGE_SIZE, 4 * PAGE_SIZE),
+            (8 * PAGE_SIZE, 2 * PAGE_SIZE),
+        ]
+        assert not any(os.path.exists(path) for path, _, _ in segments)
+
+        views = [r.create_next_worker_view(PAGE_SIZE) for r in built]
+        for rank, view in enumerate(views):
+            view.fill_(rank + 1)
+        rows = built[0].base_tensor.view(num_chunks, num_workers, PAGE_SIZE)
+        assert (rows[:, 0] == 1).all()
+        assert (rows[:, 1] == 2).all()
+        del views, rows
+    finally:
+        for r in built:
+            r.cleanup()
+
+
 # ---------------------------------------------------------------------------
 # Multi-worker race — concurrent construction
 # ---------------------------------------------------------------------------
