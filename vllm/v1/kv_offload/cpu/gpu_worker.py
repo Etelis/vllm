@@ -15,7 +15,7 @@ from vllm.distributed.device_communicators.cuda_wrapper import CudaRTLibrary
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.triton_utils import HAS_TRITON, triton
-from vllm.utils.math_utils import cdiv
+from vllm.utils.math_utils import cdiv, round_up
 from vllm.utils.torch_utils import PIN_MEMORY
 from vllm.v1.kv_offload.base import (
     BlockIDsLoadStoreSpec,
@@ -196,10 +196,54 @@ def _canonical_block_sizes(
 
 # Bound registration size to avoid driver limits on large host allocations.
 MAX_HOST_REGISTER_CHUNK_BYTES = 64 * 1024**3
+# Above this many rows, per-slot registration costs more in calls than it saves.
+MAX_HOST_REGISTER_SLOTS = 1 << 16
 
 
-def pin_mmap_region(region: SharedOffloadRegion) -> None:
-    """Register row-aligned chunks, rolling back on failure."""
+def _host_register_ranges(
+    region: SharedOffloadRegion, worker_slot_only: bool
+) -> list[tuple[int, int]]:
+    base_ptr = region._base.data_ptr()
+    page_size = region.page_size
+    stride = region._row_stride
+    slot_size = region.cpu_page_size
+    if (
+        worker_slot_only
+        and region.rank is not None
+        and stride - slot_size >= page_size
+        and region.num_chunks <= MAX_HOST_REGISTER_SLOTS
+    ):
+        # Each worker pins only its own slot per row instead of every worker
+        # pinning the whole region. Rounding a slot out to page boundaries
+        # cannot reach the next slot of the same worker, which is at least a
+        # page away.
+        ranges = []
+        for chunk in range(region.num_chunks):
+            start = chunk * stride + region.rank * slot_size
+            aligned_start = start // page_size * page_size
+            aligned_end = round_up(start + slot_size, page_size)
+            ranges.append((base_ptr + aligned_start, aligned_end - aligned_start))
+        return ranges
+
+    # Chunks end on block-row boundaries, which are page aligned, so neither the
+    # driver's page rounding nor any single block transfer straddles two
+    # registrations.
+    total_size = region.total_size_bytes
+    chunk_size = max(MAX_HOST_REGISTER_CHUNK_BYTES // stride, 1) * stride
+    return [
+        (base_ptr + offset, min(chunk_size, total_size - offset))
+        for offset in range(0, total_size, chunk_size)
+    ]
+
+
+def pin_mmap_region(
+    region: SharedOffloadRegion, worker_slot_only: bool = False
+) -> None:
+    """Register the region, rolling back on failure.
+
+    With ``worker_slot_only``, register only this worker's slot in each row,
+    for workers that never touch other workers' slots.
+    """
     if not current_platform.is_cuda_alike():
         logger.info(
             "Skipping mmap host registration on %s; cudaHostRegister is only "
@@ -222,18 +266,12 @@ def pin_mmap_region(region: SharedOffloadRegion) -> None:
 
     base_ptr = region._base.data_ptr()
     total_size = region.total_size_bytes
-    # Chunks end on block-row boundaries, which are page aligned, so neither the
-    # driver's page rounding nor any single block transfer straddles two
-    # registrations.
-    rows_per_chunk = max(MAX_HOST_REGISTER_CHUNK_BYTES // region._row_stride, 1)
-    chunk_size = rows_per_chunk * region._row_stride
+    ranges = _host_register_ranges(region, worker_slot_only)
 
     # Register, drain and roll back through the same runtime handle, so a
     # failed chunk leaves neither a pending error nor a partly pinned region.
     addresses: list[int] = []
-    for offset in range(0, total_size, chunk_size):
-        address = base_ptr + offset
-        size = min(chunk_size, total_size - offset)
+    for address, size in ranges:
         result = cudart.cudaHostRegister(address, size)
         if result == 0:
             addresses.append(address)
@@ -243,7 +281,7 @@ def pin_mmap_region(region: SharedOffloadRegion) -> None:
             "cudaHostRegister failed for rank=%d at %.2f of %.2f GB (code=%d); "
             "the offload region stays pageable",
             rank,
-            offset / 1e9,
+            (address - base_ptr) / 1e9,
             total_size / 1e9,
             result,
         )
@@ -265,7 +303,7 @@ def pin_mmap_region(region: SharedOffloadRegion) -> None:
     logger.debug(
         "cudaHostRegister rank=%d %.2f GB in %d chunk(s)",
         rank,
-        total_size / 1e9,
+        sum(size for _, size in ranges) / 1e9,
         len(addresses),
     )
 
@@ -816,7 +854,7 @@ class CPUOffloadingWorker(OffloadingWorker):
         pin_memory = PIN_MEMORY
         logger.info("Allocating %d CPU tensors...", len(kv_caches.tensors))
         if mmap_region is not None and pin_memory:
-            pin_mmap_region(mmap_region)
+            pin_mmap_region(mmap_region, worker_slot_only=not canonical_layout)
         host_memory_is_pinned = pin_memory and (
             mmap_region is None or mmap_region.is_pinned
         )
