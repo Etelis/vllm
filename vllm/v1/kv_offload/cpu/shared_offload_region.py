@@ -193,6 +193,7 @@ class SharedOffloadRegion:
         self.num_chunks = num_chunks
         self._row_stride = kv_bytes_per_chunk
         self.total_size_bytes = self.num_chunks * self._row_stride
+        self.cpu_page_size = cpu_page_size
 
         self.mmap_path = f"/dev/shm/vllm_offload_{engine_id}.mmap"
         num_segments = max(
