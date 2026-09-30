@@ -83,9 +83,8 @@ class SharedOffloadRegion:
 
     Creator-only population pre-faults the entire region before the barrier
     and requires that barrier to keep joiners from using unpopulated pages.
-    With ``populate_shard=(index, count)``, a worker pre-faults only its
-    contiguous 1/count of the region, for layouts where every worker maps the
-    same bytes, so each page is faulted once rather than once per worker.
+    ``populate_shard=(index, count)`` pre-faults only this worker's contiguous
+    share, for layouts where every worker maps the same bytes.
     """
 
     BLOCK_SIZE_ALIGNMENT: int = mmap.PAGESIZE
@@ -219,18 +218,11 @@ class SharedOffloadRegion:
 
         if populate_shard is not None:
             index, count = populate_shard
-            shard_size = round_up(cdiv(self.total_size_bytes, count), self.page_size)
-            start = min(index * shard_size, self.total_size_bytes)
-            end = min(start + shard_size, self.total_size_bytes)
-            _t0 = time.perf_counter()
-            if end > start:
-                populate_write_fn(self.mmap_obj, start, end - start)
-            logger.debug(
-                "MADV_POPULATE_WRITE shard %d/%d: %.3f s",
-                index,
-                count,
-                time.perf_counter() - _t0,
-            )
+            share = round_up(cdiv(self.total_size_bytes, count), self.page_size)
+            start = min(index * share, self.total_size_bytes)
+            if start < self.total_size_bytes:
+                length = min(share, self.total_size_bytes - start)
+                populate_write_fn(self.mmap_obj, start, length)
         elif rank is not None:
             # Populate only this worker's pages (one slot per chunk row).
             worker_offset = rank * cpu_page_size
