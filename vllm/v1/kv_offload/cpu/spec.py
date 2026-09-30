@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from typing import Any
 
-import torch
 from typing_extensions import override
 
 from vllm.platforms import current_platform
@@ -160,8 +159,8 @@ class CPUOffloadingSpec(OffloadingSpec):
         return self._manager
 
     def _uses_shared_region(self) -> bool:
-        """Whether the worker CPU buffer is the shared mmap region (vs a private
-        per-rank tensor); replicated-layout dedup is gated on this being True."""
+        """Whether the worker CPU buffer is a SharedOffloadRegion (vs a per-rank
+        pinned tensor); replicated-layout dedup is gated on this being True."""
         return current_platform.is_cuda_alike() and not current_platform.is_rocm()
 
     def create_worker(self, kv_caches: CanonicalKVCaches) -> CPUOffloadingWorker:
@@ -169,21 +168,30 @@ class CPUOffloadingSpec(OffloadingSpec):
         # num_chunks == 0 would size the region to zero bytes, which cannot be
         # mmap'd; fall back to the tensor path (empty tensors) as before.
         if self._uses_shared_region() and self.num_chunks > 0:
-            # Replicated layout puts all ranks on slot 0 (single MLA copy);
-            # otherwise each rank takes its own slot by physical device index.
             if self.replicated_layout:
-                rank = 0
+                # All ranks share slot 0 (single MLA copy) of one shm region.
+                mmap_region = SharedOffloadRegion(
+                    engine_id=self.config.engine_id,
+                    num_chunks=self.num_chunks,
+                    rank=0,
+                    kv_bytes_per_chunk=self.kv_bytes_per_chunk,
+                    cpu_page_size=self.cpu_page_size_per_worker,
+                    barrier=_all_workers_barrier,
+                )
             else:
-                world_size = self.config.parallel.world_size
-                rank = torch.accelerator.current_device_index() % world_size
-            mmap_region = SharedOffloadRegion(
-                engine_id=self.config.engine_id,
-                num_chunks=self.num_chunks,
-                rank=rank,
-                kv_bytes_per_chunk=self.kv_bytes_per_chunk,
-                cpu_page_size=self.cpu_page_size_per_worker,
-                barrier=_all_workers_barrier,
-            )
+                # Ranks never read each other's slots, so each keeps a private
+                # buffer: nothing is shared to fault through one file, and
+                # every rank pins only its own share.
+                mmap_region = SharedOffloadRegion(
+                    engine_id=self.config.engine_id,
+                    num_chunks=self.num_chunks,
+                    rank=0,
+                    kv_bytes_per_chunk=round_up(
+                        self.cpu_page_size_per_worker, self.BLOCK_SIZE_ALIGNMENT
+                    ),
+                    cpu_page_size=self.cpu_page_size_per_worker,
+                    shared=False,
+                )
         try:
             return CPUOffloadingWorker(
                 kv_caches=kv_caches,

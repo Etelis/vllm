@@ -246,8 +246,13 @@ def test_worker_syncs_before_cleanup_after_handler_failure(
 @pytest.mark.parametrize("seed", SEEDS)
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize(
-    ("use_shared_memory", "replicated_layout"),
-    [(False, False), (True, False), (True, True)],
+    ("use_shared_memory", "replicated_layout", "private_region"),
+    [
+        (False, False, False),
+        (True, False, False),
+        (True, True, False),
+        (True, False, True),
+    ],
 )
 @torch.inference_mode()
 def test_transfer(
@@ -263,6 +268,7 @@ def test_transfer(
     device: str,
     use_shared_memory: bool,
     replicated_layout: bool,
+    private_region: bool,
 ) -> None:
     set_random_seed(seed)
 
@@ -305,7 +311,9 @@ def test_transfer(
         )
         simulated_world_size = 2
         kv_bytes_per_chunk = (
-            cpu_page_size if replicated_layout else cpu_page_size * simulated_world_size
+            cpu_page_size
+            if replicated_layout or private_region
+            else cpu_page_size * simulated_world_size
         )
         mmap_region = SharedOffloadRegion(
             engine_id=str(uuid.uuid4()),
@@ -313,6 +321,7 @@ def test_transfer(
             rank=0,
             kv_bytes_per_chunk=kv_bytes_per_chunk,
             cpu_page_size=cpu_page_size,
+            shared=not private_region,
         )
 
     worker = CPUOffloadingWorker(

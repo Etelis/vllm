@@ -15,6 +15,7 @@ from vllm.distributed.device_communicators.shm_broadcast import (
 )
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
+from vllm.utils.cpu_resource_utils import check_cgroup_memory_available
 
 logger = init_logger(__name__)
 
@@ -82,6 +83,10 @@ class SharedOffloadRegion:
 
     Creator-only population pre-faults the entire region before the barrier
     and requires that barrier to keep joiners from using unpopulated pages.
+
+    With ``shared=False`` the region is instead private anonymous memory of
+    this worker (no file), for layouts in which no other process reads the
+    bytes.
     """
 
     BLOCK_SIZE_ALIGNMENT: int = mmap.PAGESIZE
@@ -97,9 +102,12 @@ class SharedOffloadRegion:
         *,
         creator_memory_check: Callable[[int], None] | None = None,
         populate_only_on_creator: bool = False,
+        shared: bool = True,
     ) -> None:
         if populate_only_on_creator and barrier is None:
             raise ValueError("Creator-only population requires a barrier.")
+        if not shared and (barrier is not None or populate_only_on_creator):
+            raise ValueError("A private region has no peers to coordinate with.")
         self.page_size = mmap.PAGESIZE
         assert kv_bytes_per_chunk % self.page_size == 0
 
@@ -115,42 +123,59 @@ class SharedOffloadRegion:
             self._worker_offset = rank * cpu_page_size
             # exclusive upper bound for this worker's area within each row
             self._worker_area_end = (rank + 1) * cpu_page_size
+        self.fd: int | None = None
+        self.mmap_obj: mmap.mmap | None = None
         try:
-            try:
-                self.fd: int | None = os.open(
-                    self.mmap_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600
-                )
-            except FileExistsError:
-                # Joiner path — another worker won O_EXCL. Reopen and wait
-                # for the file to reach expected size.
-                self.fd = os.open(self.mmap_path, os.O_RDWR)
-                _wait_for_file_size(self.fd, self.total_size_bytes)
-                logger.info("Opened existing mmap file %s", self.mmap_path)
-            else:
-                # Creator path. We won O_EXCL, so we own the file: any
-                # failure here must clean up so concurrent joiners don't
-                # land on a 0-byte stub and spin in _wait_for_file_size
-                # for the full 30 s timeout.
-                self._creator = True
-                if creator_memory_check is not None:
-                    creator_memory_check(self.total_size_bytes)
-                check_shm_free_space(
+            if shared:
+                try:
+                    self.fd = os.open(
+                        self.mmap_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600
+                    )
+                except FileExistsError:
+                    # Joiner path — another worker won O_EXCL. Reopen and wait
+                    # for the file to reach expected size.
+                    self.fd = os.open(self.mmap_path, os.O_RDWR)
+                    _wait_for_file_size(self.fd, self.total_size_bytes)
+                    logger.info("Opened existing mmap file %s", self.mmap_path)
+                else:
+                    # Creator path. We won O_EXCL, so we own the file: any
+                    # failure here must clean up so concurrent joiners don't
+                    # land on a 0-byte stub and spin in _wait_for_file_size
+                    # for the full 30 s timeout.
+                    self._creator = True
+                    if creator_memory_check is not None:
+                        creator_memory_check(self.total_size_bytes)
+                    check_shm_free_space(
+                        self.total_size_bytes,
+                        allocation_name="CPU KV offload shared region in /dev/shm",
+                    )
+                    os.ftruncate(self.fd, self.total_size_bytes)
+                    logger.info(
+                        "Created mmap file %s (%.2f GB)",
+                        self.mmap_path,
+                        self.total_size_bytes / 1e9,
+                    )
+
+                self.mmap_obj = mmap.mmap(
+                    self.fd,
                     self.total_size_bytes,
-                    allocation_name="CPU KV offload shared region in /dev/shm",
+                    flags=mmap.MAP_SHARED,
+                    prot=mmap.PROT_READ | mmap.PROT_WRITE,
                 )
-                os.ftruncate(self.fd, self.total_size_bytes)
+            else:
+                check_cgroup_memory_available(
+                    self.total_size_bytes, "CPU KV offload buffer"
+                )
+                self.mmap_obj = mmap.mmap(
+                    -1,
+                    self.total_size_bytes,
+                    flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS,
+                    prot=mmap.PROT_READ | mmap.PROT_WRITE,
+                )
                 logger.info(
-                    "Created mmap file %s (%.2f GB)",
-                    self.mmap_path,
+                    "Allocated private offload buffer (%.2f GB)",
                     self.total_size_bytes / 1e9,
                 )
-
-            self.mmap_obj: mmap.mmap | None = mmap.mmap(
-                self.fd,
-                self.total_size_bytes,
-                flags=mmap.MAP_SHARED,
-                prot=mmap.PROT_READ | mmap.PROT_WRITE,
-            )
 
             if populate_only_on_creator and self._creator:
                 populate_write_fn = _get_populate_write_fn(self.mmap_obj)
@@ -192,7 +217,8 @@ class SharedOffloadRegion:
                         os.unlink(self.mmap_path)
                     self._creator = False
                 self.mmap_obj.close()
-                os.close(self.fd)
+                if self.fd is not None:
+                    os.close(self.fd)
                 self.mmap_obj = None
                 self.fd = None
                 raise
@@ -212,7 +238,7 @@ class SharedOffloadRegion:
 
         populate_write_fn = _get_populate_write_fn(self.mmap_obj)
 
-        if rank is not None:
+        if rank is not None and shared:
             # Populate only this worker's pages (one slot per chunk row).
             worker_offset = rank * cpu_page_size
             _t0 = time.perf_counter()
@@ -229,7 +255,7 @@ class SharedOffloadRegion:
                 time.perf_counter() - _t0,
             )
         else:
-            # No rank — populate the entire shared region in one call.
+            # No rank, or a private region — populate it all in one call.
             _t0 = time.perf_counter()
             populate_write_fn(self.mmap_obj, 0, self.total_size_bytes)
             logger.debug(
