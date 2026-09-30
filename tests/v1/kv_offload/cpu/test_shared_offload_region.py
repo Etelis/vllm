@@ -45,6 +45,7 @@ def _make_region(
     num_workers: int = 1,
     rank: int = 0,
     barrier=None,
+    populate_shard: tuple[int, int] | None = None,
 ) -> SharedOffloadRegion:
     assert cpu_page_size % PAGE_SIZE == 0
     return SharedOffloadRegion(
@@ -54,6 +55,7 @@ def _make_region(
         kv_bytes_per_chunk=num_workers * cpu_page_size,
         cpu_page_size=cpu_page_size,
         barrier=barrier,
+        populate_shard=populate_shard,
     )
 
 
@@ -526,6 +528,25 @@ def test_madvise_success_selects_madvise_population(iid, monkeypatch):
         )
 
 
+@pytest.mark.parametrize(
+    "shard, expected",
+    [((1, 2), [(3 * PAGE_SIZE, 3 * PAGE_SIZE)]), ((3, 4), [])],
+)
+def test_populate_shard_prefaults_only_its_share(iid, monkeypatch, shard, expected):
+    """Workers that map the same bytes each pre-fault one contiguous share
+    (page-rounded; a trailing share may be empty) instead of the whole region."""
+    from vllm.v1.kv_offload.cpu import shared_offload_region as sor
+
+    madvise_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        sor,
+        "_madvise_populate_write",
+        lambda mm, off, ln: madvise_calls.append((off, ln)),
+    )
+    with _region(iid, num_chunks=3, num_workers=2, populate_shard=shard):
+        assert madvise_calls == [(0, PAGE_SIZE), *expected]
+
+
 def test_madvise_einval_selects_fallback_for_ranked_region(iid, monkeypatch):
     """An EINVAL probe must select fallback for every ranked chunk."""
     from vllm.v1.kv_offload.cpu import shared_offload_region as sor
@@ -810,12 +831,16 @@ def host_register(monkeypatch):
     return cudart, torch_cudart
 
 
-def test_pin_mmap_region_registers_row_aligned_chunks(iid, host_register):
+@pytest.mark.parametrize("worker_slot_only", [False, True])
+def test_pin_mmap_region_registers_row_aligned_chunks(
+    iid, host_register, worker_slot_only
+):
     """Chunks end on row boundaries: 3-page rows under a 7-page cap register
-    as 6 + 6 + 3 pages, where a raw byte cap would give 7 + 7 + 1."""
+    as 6 + 6 + 3 pages, where a raw byte cap would give 7 + 7 + 1. A slot
+    spanning the whole row registers the same way."""
     cudart, torch_cudart = host_register
     with _region(iid, num_chunks=5, cpu_page_size=3 * PAGE_SIZE) as region:
-        gpu_worker.pin_mmap_region(region)
+        gpu_worker.pin_mmap_region(region, worker_slot_only=worker_slot_only)
         base = region._base.data_ptr()
         assert cudart.mock_calls == [
             call.cudaHostRegister(base, 6 * PAGE_SIZE),
@@ -828,6 +853,33 @@ def test_pin_mmap_region_registers_row_aligned_chunks(iid, host_register):
         call(base + 12 * PAGE_SIZE),
         call(base + 6 * PAGE_SIZE),
         call(base),
+    ]
+
+
+def test_pin_mmap_region_worker_slot_only_registers_own_slots(iid, host_register):
+    """Each worker pins only its slot in every row, rounded out to pages: a
+    1.5-page rank-1 slot in 4-page rows registers pages [1, 3) of each row."""
+    cudart, torch_cudart = host_register
+    region = SharedOffloadRegion(
+        engine_id=iid,
+        num_chunks=3,
+        rank=1,
+        kv_bytes_per_chunk=4 * PAGE_SIZE,
+        cpu_page_size=PAGE_SIZE + PAGE_SIZE // 2,
+    )
+    try:
+        gpu_worker.pin_mmap_region(region, worker_slot_only=True)
+        base = region._base.data_ptr()
+        slots = [base + row * 4 * PAGE_SIZE + PAGE_SIZE for row in range(3)]
+        assert cudart.mock_calls == [
+            call.cudaHostRegister(slot, 2 * PAGE_SIZE) for slot in slots
+        ]
+        assert region.is_pinned
+    finally:
+        region.cleanup()
+        _cleanup_file(region.mmap_path)
+    assert torch_cudart.cudaHostUnregister.call_args_list == [
+        call(slot) for slot in reversed(slots)
     ]
 
 

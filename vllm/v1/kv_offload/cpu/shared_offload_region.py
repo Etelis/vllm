@@ -15,6 +15,7 @@ from vllm.distributed.device_communicators.shm_broadcast import (
 )
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
+from vllm.utils.math_utils import cdiv, round_up
 
 logger = init_logger(__name__)
 
@@ -82,6 +83,9 @@ class SharedOffloadRegion:
 
     Creator-only population pre-faults the entire region before the barrier
     and requires that barrier to keep joiners from using unpopulated pages.
+    With ``populate_shard=(index, count)``, a worker pre-faults only its
+    contiguous 1/count of the region, for layouts where every worker maps the
+    same bytes, so each page is faulted once rather than once per worker.
     """
 
     BLOCK_SIZE_ALIGNMENT: int = mmap.PAGESIZE
@@ -97,6 +101,7 @@ class SharedOffloadRegion:
         *,
         creator_memory_check: Callable[[int], None] | None = None,
         populate_only_on_creator: bool = False,
+        populate_shard: tuple[int, int] | None = None,
     ) -> None:
         if populate_only_on_creator and barrier is None:
             raise ValueError("Creator-only population requires a barrier.")
@@ -106,6 +111,7 @@ class SharedOffloadRegion:
         self.num_chunks = num_chunks
         self._row_stride = kv_bytes_per_chunk
         self.total_size_bytes = self.num_chunks * self._row_stride
+        self.cpu_page_size = cpu_page_size
 
         self.mmap_path = f"/dev/shm/vllm_offload_{engine_id}.mmap"
         self._creator = False  # set True only if this worker creates the file
@@ -212,7 +218,21 @@ class SharedOffloadRegion:
 
         populate_write_fn = _get_populate_write_fn(self.mmap_obj)
 
-        if rank is not None:
+        if populate_shard is not None:
+            index, count = populate_shard
+            shard_size = round_up(cdiv(self.total_size_bytes, count), self.page_size)
+            start = min(index * shard_size, self.total_size_bytes)
+            end = min(start + shard_size, self.total_size_bytes)
+            _t0 = time.perf_counter()
+            if end > start:
+                populate_write_fn(self.mmap_obj, start, end - start)
+            logger.debug(
+                "MADV_POPULATE_WRITE shard %d/%d: %.3f s",
+                index,
+                count,
+                time.perf_counter() - _t0,
+            )
+        elif rank is not None:
             # Populate only this worker's pages (one slot per chunk row).
             worker_offset = rank * cpu_page_size
             _t0 = time.perf_counter()
