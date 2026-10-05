@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import os
+import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +18,24 @@ from vllm.envs import (
     environment_variables,
 )
 from vllm.exceptions import VLLMValidationError
+
+
+@pytest.mark.parametrize("override", [None, "custom-cache"])
+def test_trtllm_kernel_cache_uses_vllm_root(tmp_path, monkeypatch, override):
+    monkeypatch.setenv("VLLM_CACHE_ROOT", str(tmp_path))
+    monkeypatch.delenv("TRTLLM_DG_CACHE_DIR", raising=False)
+    if override is not None:
+        monkeypatch.setenv("TRTLLM_DG_CACHE_DIR", override)
+
+    result = subprocess.check_output(
+        [
+            sys.executable,
+            "-c",
+            "import vllm, os; print(os.environ.get('TRTLLM_DG_CACHE_DIR'))",
+        ],
+        text=True,
+    )
+    assert result.strip() == (override or str(tmp_path / "trtllm_deep_gemm"))
 
 
 def test_object_storage_shm_default_name():

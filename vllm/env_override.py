@@ -149,6 +149,7 @@ _maybe_promote_torch_symbols_for_rocm()
 
 import torch
 
+from vllm import envs
 from vllm.logger import init_logger
 from vllm.utils.torch_utils import is_torch_equal, is_torch_equal_or_newer
 
@@ -174,6 +175,10 @@ os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
 # It can still be overridden by setting TRITON_CACHE_AUTOTUNING=0
 # in the environment.
 os.environ.setdefault("TRITON_CACHE_AUTOTUNING", "1")
+
+os.environ.setdefault(
+    "TRTLLM_DG_CACHE_DIR", os.path.join(envs.VLLM_CACHE_ROOT, "trtllm_deep_gemm")
+)
 
 # When unset, TileLang routes JIT temp dirs through a world-shared
 # /tmp/tvm-debug-mode-tempdirs/ whose ownership is pinned to whichever

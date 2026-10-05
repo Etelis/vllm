@@ -18,11 +18,20 @@ For more information, see the [optimization level documentation](../design/optim
 
 ## Faster Startup
 
-Beyond the optimization levels, three mechanisms reduce time-to-first-token on repeated boots of the same (model, config, hardware) combination:
+Beyond the optimization levels, several mechanisms reduce time-to-first-token on repeated boots of the same (model, config, hardware) combination:
 
 - **Reuse the compile cache.** vLLM persists `torch.compile` artifacts under `VLLM_CACHE_ROOT` (default `~/.cache/vllm`), and the cache directory can be copied between machines or baked into a container image; see the [torch.compile design doc](../design/torch_compile.md). Set `VLLM_FORCE_AOT_LOAD=1` to fail loudly instead of silently recompiling when the cache misses (any change to the model, config, relevant `VLLM_*` environment variables, torch build, or GPU model invalidates it).
 - **Skip memory profiling with `--kv-cache-memory`.** On startup, vLLM logs the exact `--kv-cache-memory` value that reproduces the current allocation. Passing it back on the next boot skips the memory-profiling measurement and the CUDA-graph memory estimation pass. Note that this has performance implications: the KV cache is sized to exactly the given value instead of being measured, so a conservative value caps batch concurrency (and therefore throughput), while an optimistic one fails at allocation time. The value is only valid on the same GPU with the same initial free memory; if a boot OOMs after hardware or co-tenant changes, remove the flag to re-profile.
 - **Serve without CUDA graphs using `--enforce-eager`.** Skips both compilation and CUDA-graph capture for the fastest possible startup, at the cost of steady-state decode performance. Useful for development loops and for measuring how much of a boot is compile/capture.
+
+vLLM defaults FlashInfer's disk-backed TRT-LLM DeepGEMM kernel cache to
+`$VLLM_CACHE_ROOT/trtllm_deep_gemm`. Persist `VLLM_CACHE_ROOT` across container
+replacements to retain it. An explicit `TRTLLM_DG_CACHE_DIR` takes precedence.
+
+Restarting on the same Linux node with the same checkpoint files can also
+reuse the OS page cache, reducing weight-loading I/O. This RAM cache is separate
+from downloaded weights and compiled kernels. Memory pressure, a node reboot
+or moving to another node can make loading cold again.
 
 ## Preemption
 
