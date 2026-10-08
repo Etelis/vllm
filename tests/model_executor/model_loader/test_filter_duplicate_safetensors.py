@@ -110,9 +110,13 @@ def test_filter_by_weight_name_drops_shards_without_wanted_weights(mtp_checkpoin
     assert filter_safetensors_files_by_weight_name(files, lambda _: True) == files
 
 
-def test_loader_does_not_read_shards_the_model_skips(mtp_checkpoint, monkeypatch):
+@pytest.mark.parametrize("release_weight_page_cache", [False, True])
+def test_loader_does_not_read_shards_the_model_skips(
+    mtp_checkpoint, monkeypatch, release_weight_page_cache
+):
     """Whole-file loaders such as InstantTensor only see the kept shards."""
     opened: list[list[str]] = []
+    recorded: list[list[str]] = []
 
     def fake_iterator(hf_weights_files, *args, **kwargs):
         opened.append(sorted(os.path.basename(f) for f in hf_weights_files))
@@ -123,12 +127,21 @@ def test_loader_does_not_read_shards_the_model_skips(mtp_checkpoint, monkeypatch
         "instanttensor_weights_iterator",
         fake_iterator,
     )
+    monkeypatch.setattr(
+        "vllm.model_executor.model_loader.default_loader.record_checkpoint_files",
+        lambda files: recorded.append(sorted(os.path.basename(f) for f in files)),
+    )
 
     class Drafter(torch.nn.Module):
         def is_unused_checkpoint_weight(self, name: str) -> bool:
             return _skip_non_mtp(name)
 
-    loader = DefaultModelLoader(LoadConfig(load_format="instanttensor"))
+    loader = DefaultModelLoader(
+        LoadConfig(
+            load_format="instanttensor",
+            release_weight_page_cache=release_weight_page_cache,
+        )
+    )
     model_config = SimpleNamespace(model=str(mtp_checkpoint), revision=None)
     list(loader.get_all_weights(model_config, Drafter()))
     list(loader.get_all_weights(model_config, torch.nn.Module()))
@@ -137,3 +150,4 @@ def test_loader_does_not_read_shards_the_model_skips(mtp_checkpoint, monkeypatch
         ["model-00002-of-00003.safetensors", "model-00003-of-00003.safetensors"],
         sorted(f.name for f in mtp_checkpoint.glob("*.safetensors")),
     ]
+    assert recorded == (opened if release_weight_page_cache else [])
