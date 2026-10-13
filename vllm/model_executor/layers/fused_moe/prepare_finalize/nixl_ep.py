@@ -336,6 +336,12 @@ class NixlEPPrepareAndFinalize(mk.FusedMoEPrepareAndFinalizeModular):
         handle = self.handles[a2a_idx]
         assert handle is not None
 
+        # With NIXL < 1.4, masking the highest rank shrinks the dispatched token
+        # slots below num_dispatchers; combine takes only the slots dispatch produced.
+        dispatched_slots = handle[0].size(1)
+        if fused_expert_output.size(1) != dispatched_slots:
+            fused_expert_output = fused_expert_output[:, :dispatched_slots].contiguous()
+
         combine_topk_weights = topk_weights
         if apply_router_weight_on_input:
             # weights have already been applied.
