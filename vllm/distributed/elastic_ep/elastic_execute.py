@@ -54,6 +54,7 @@ from vllm.model_executor.warmup.flashinfer_autotune_cache import (
 from vllm.model_executor.warmup.kernel_warmup import kernel_warmup
 from vllm.platforms import current_platform
 from vllm.utils import is_moe_layer
+from vllm.utils.gc_utils import freeze_gc_heap
 from vllm.v1.engine import ReconfigureDistributedRequest, ReconfigureRankType
 from vllm.v1.worker.dp_utils import skip_dp_coordination
 from vllm.v1.worker.gpu.cudagraph_utils import CudaGraphManager
@@ -658,7 +659,8 @@ class ElasticEPScalingExecutor:
             self._perform_eplb_reshuffle()
         if not self._can_reuse_fused_moe_kernel():
             # warm_and_capture's dummy run warms the deferred dp/ep groups.
-            self.warm_and_capture(graphs_released=is_existing_worker)
+            # Joining workers have captured nothing, so there is nothing to release.
+            self.warm_and_capture(graphs_released=True)
         elif current_platform.is_rocm():
             # Reuse path skips warm_and_capture; warm the deferred groups here.
             self._warm_target_groups(get_dp_group(), get_ep_group())
@@ -754,6 +756,11 @@ class ElasticEPScalingExecutor:
             kernel_warmup(self.worker, process_local_only=True)
         if self._can_reuse_fused_moe_kernel():
             self.warm_and_capture()
+        else:
+            # The commit warmup holds every rank, so run its once-per-process
+            # tail on this rank beforehand.
+            self.worker.trigger_inductor_lazy_init()
+            freeze_gc_heap()
 
     def warm_and_capture(self, *, graphs_released: bool = False) -> None:
         # _ensure_workspace_size allocates a fresh tensor on grow, leaving

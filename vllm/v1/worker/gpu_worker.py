@@ -1108,15 +1108,7 @@ class Worker(WorkerBase):
             self.model_config.seed, self.parallel_config.data_parallel_index
         )
 
-        # Eagerly trigger inductor's once-per-process lazy inits during
-        # warmup (rather than on a later compile cache-miss at runtime).
-        c_config = self.compilation_config
-        if c_config.mode != CompilationMode.NONE and c_config.backend == "inductor":
-            from vllm.compilation.compiler_interface import (
-                trigger_inductor_lazy_init,
-            )
-
-            trigger_inductor_lazy_init(self.device)
+        self.trigger_inductor_lazy_init()
 
         # All warmup is done — start monitoring for unexpected JIT
         # compilations that would cause latency spikes during inference.
@@ -1135,6 +1127,17 @@ class Worker(WorkerBase):
             language_model=self.compilation_config.compilation_time,
             encoder=self.compilation_config.encoder_compilation_time,
         )
+
+    def trigger_inductor_lazy_init(self) -> None:
+        # Eagerly trigger inductor's once-per-process lazy inits during
+        # warmup (rather than on a later compile cache-miss at runtime).
+        c_config = self.compilation_config
+        if c_config.mode != CompilationMode.NONE and c_config.backend == "inductor":
+            from vllm.compilation.compiler_interface import (
+                trigger_inductor_lazy_init,
+            )
+
+            trigger_inductor_lazy_init(self.device)
 
     def _maybe_activate_jit_monitor(self) -> None:
         # When JIT warmup is disabled (e.g. enforce_eager), runtime JIT
