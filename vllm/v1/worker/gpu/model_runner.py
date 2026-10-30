@@ -1146,12 +1146,18 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         torch.accelerator.synchronize()
         gc_was_enabled = gc.isenabled()
         gc.disable()
+        # Other threads keep running CUDA work while serving, e.g. destroying
+        # the retired groups, so only this thread's calls may end the capture.
+        thread_local_graph = functools.partial(
+            torch.cuda.graph, capture_error_mode="thread_local"
+        )
         try:
             # Keep the serving allocator cache instead of releasing it per graph.
             with (
                 self.eplb.suppress(),
                 patch("torch.accelerator.empty_cache", lambda *args, **kwargs: None),
                 patch.object(torch.cuda, "empty_cache", lambda *args, **kwargs: None),
+                patch.object(torch.cuda, "graph", thread_local_graph),
             ):
                 manager.capture(
                     self.model,
