@@ -253,6 +253,17 @@ class ElasticEPScalingExecutor:
 
     def _start_group_cleanup(self, groups: tuple[GroupCoordinator | None, ...]) -> None:
         assert self._group_cleanup_future is None
+        if self.worker.parallel_config.all2all_backend == "deepep_v2":
+            from vllm.distributed.device_communicators.cuda_communicator import (
+                CudaCommunicator,
+            )
+
+            # DeepEP's collective buffer teardown shares the forward stream.
+            for group in groups:
+                if group is not None and isinstance(
+                    group.device_communicator, CudaCommunicator
+                ):
+                    group.device_communicator.destroy_all2all_manager()
         self._group_cleanup_future = self._async_executor.submit(
             self._destroy_retired_groups, groups
         )
@@ -292,6 +303,11 @@ class ElasticEPScalingExecutor:
         standby_ep_group = get_standby_ep_group()
         assert standby_ep_group is not None
         all2all_manager = get_ep_all2all_manager(standby_ep_group)
+        standby_dp_group = get_standby_dp_group()
+        assert standby_dp_group is not None
+        all2all_manager.dp_group = standby_dp_group
+        all2all_manager.dp_rank = standby_dp_group.rank_in_group
+        all2all_manager.dp_world_size = standby_dp_group.world_size
         all2all_manager.stage_ep_size()
         if not self._can_reuse_fused_moe_kernel():
             self.stage_standby_moe_quant_methods(all2all_manager)
@@ -633,13 +649,20 @@ class ElasticEPScalingExecutor:
         else:
             mapping = self.receive_expert_mapping()
             self.worker.model_runner.setup_eplb_from_mapping(mapping)
+        reshuffle_before_warmup = (
+            self.worker.parallel_config.all2all_backend == "deepep_v2"
+        )
+        if reshuffle_before_warmup:
+            # Expanded dispatch must route tokens to joiners to size their workspace.
+            self._perform_eplb_reshuffle()
         if not self._can_reuse_fused_moe_kernel():
             # warm_and_capture's dummy run warms the deferred dp/ep groups.
-            self.warm_and_capture()
+            self.warm_and_capture(graphs_released=is_existing_worker)
         elif current_platform.is_rocm():
             # Reuse path skips warm_and_capture; warm the deferred groups here.
             self._warm_target_groups(get_dp_group(), get_ep_group())
-        self._perform_eplb_reshuffle(async_op=True)
+        if not reshuffle_before_warmup:
+            self._perform_eplb_reshuffle(async_op=True)
         if is_existing_worker:
             self._start_group_cleanup(retired_groups)
 
@@ -650,7 +673,7 @@ class ElasticEPScalingExecutor:
         else:
             retired_groups = self.switch_and_prepare()
             if not self._can_reuse_fused_moe_kernel():
-                self.warm_and_capture()
+                self.warm_and_capture(graphs_released=True)
             elif current_platform.is_rocm():
                 # Reuse path skips warm_and_capture; warm the deferred groups here.
                 self._warm_target_groups(get_dp_group(), get_ep_group())
@@ -731,11 +754,12 @@ class ElasticEPScalingExecutor:
         if self._can_reuse_fused_moe_kernel():
             self.warm_and_capture()
 
-    def warm_and_capture(self) -> None:
+    def warm_and_capture(self, *, graphs_released: bool = False) -> None:
         # _ensure_workspace_size allocates a fresh tensor on grow, leaving
         # any captured CUDA graph with a stale data pointer; drop graphs
         # before re-warm so captures realign with the resized buffer.
-        self._release_cuda_graphs()
+        if not graphs_released:
+            self._release_cuda_graphs()
         unlock_workspace()
 
         runner = self.worker.model_runner

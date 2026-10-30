@@ -6,9 +6,11 @@ Requires: docker run ... --cap-add=SYS_PTRACE ...
 Run: pytest tests/distributed/test_mnnvl_alltoall.py -v
 """
 
+import gc
 import os
 import sys
 import traceback
+import weakref
 from contextlib import contextmanager
 from functools import partial
 
@@ -1397,12 +1399,20 @@ def _deepep_v2_lifecycle_worker(rank, world_size):
     # get_handle again with same args should return cached handle
     handle2 = manager.get_handle(dict(handle_kwargs))
     assert handle2 is handle
+    handle_ref = weakref.ref(handle)
+    del handle, handle2
+    gc.collect()
+    assert handle_ref() is not None
+    handle = manager.get_handle(dict(handle_kwargs))
+    assert handle is handle_ref()
 
     torch.distributed.barrier()
 
-    # Destroy clears the cache
     manager.destroy()
-    assert len(manager.handle_cache._cache) == 0
+    assert handle.runtime is None
+    del handle
+    gc.collect()
+    assert handle_ref() is None
 
     torch.distributed.barrier()
 

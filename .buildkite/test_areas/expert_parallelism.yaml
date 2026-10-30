@@ -79,3 +79,49 @@ steps:
 #   commands:
 #   - bash /vllm-workspace/.buildkite/scripts/install-kv-connectors.sh
 #   - pytest -v -s distributed/test_elastic_ep.py
+
+- label: ":nvidia: (H100) [Nightly] DeepEP v2 Elastic EP Scaling"
+  key: deepep-v2-elastic-ep-scaling-test
+  optional: true
+  timeout_in_minutes: 60
+  device: h100
+  num_devices: 4
+  working_dir: "/vllm-workspace/tests"
+  env:
+    RAY_OVERRIDE_RESOURCES: '{"CPU":8,"object_store_memory":2147483648}'
+    UCX_TLS: sm,self,cuda_copy,cuda_ipc,tcp
+  source_file_dependencies:
+  - vllm/distributed/elastic_ep/
+  - vllm/distributed/device_communicators/
+  - vllm/distributed/eplb/
+  - vllm/distributed/parallel_state.py
+  - vllm/distributed/stateless_coordinator.py
+  - vllm/model_executor/layers/fused_moe/
+  - vllm/config/
+  - vllm/v1/worker/
+  - vllm/v1/engine/
+  - vllm/v1/executor/
+  - vllm/compilation/
+  - tests/distributed/test_elastic_ep.py
+  - tests/distributed/test_mnnvl_alltoall.py
+  - tests/evals/gsm8k/
+  - tests/utils.py
+  - requirements/kv_connectors.txt
+  - tools/ep_kernels/
+  - docker/
+  commands:
+  - uv pip uninstall --system nixl-cu12 nixl-cu13
+  - |-
+    NIXL_VERSION=$(awk '$1 == "nixl" && $2 == "==" {print $3}' /vllm-workspace/requirements/kv_connectors.txt)
+    uv pip install --system --no-deps "nixl==$NIXL_VERSION" "nixl-cu13==$NIXL_VERSION"
+  - >-
+    python3 -c 'import torch; from vllm.utils.import_utils import has_deep_ep_v2;
+    from vllm.distributed.eplb.eplb_communicator import has_nixl;
+    assert has_deep_ep_v2() and has_nixl(), "DeepEP v2 and NIXL are required";
+    assert torch.cuda.device_count() >= 4, "Four GPUs are required";
+    assert torch.cuda.nccl.version() >= (2, 30, 4), "NCCL >= 2.30.4 is required"'
+  - >-
+    pytest -v -s
+    distributed/test_elastic_ep.py::test_elastic_ep_scaling
+    distributed/test_mnnvl_alltoall.py::test_deepep_v2_manager_lifecycle
+    -k deepep_v2

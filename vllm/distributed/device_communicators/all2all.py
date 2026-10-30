@@ -1047,6 +1047,8 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         super().__init__(cpu_group, tcp_store_group)
         self._device_group = device_group
         self.handle_cache = Cache()
+        # Retired kernels can release their buffers before collective teardown.
+        self._buffers: list[Any] = []
         self._num_sms: int | None = None
         self._gin_checked = False
 
@@ -1111,6 +1113,8 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         handle: deep_ep.ElasticBuffer = self.handle_cache.get_or_create(
             buffer_kwargs, deep_ep.ElasticBuffer
         )
+        if handle not in self._buffers:
+            self._buffers.append(handle)
         if self._num_sms is None:
             self._num_sms = handle.get_theoretical_num_sms(
                 num_experts=num_experts,
@@ -1123,8 +1127,9 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
 
     def destroy(self):
         with self.handle_cache._lock:
-            for _, handle in self.handle_cache._cache.items():
+            for handle in self._buffers:
                 handle.destroy()
+            self._buffers.clear()
             self.handle_cache._cache.clear()
 
 

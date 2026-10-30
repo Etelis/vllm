@@ -301,6 +301,11 @@ class CUDAGraphWrapper:
                             lambda *args, **kwargs: None,
                         )
                     )
+                    stack.enter_context(
+                        patch.object(
+                            torch.cuda, "empty_cache", lambda *args, **kwargs: None
+                        )
+                    )
 
                 graph_pool = stack.enter_context(
                     capture_pool(self.graph_pool, self.vllm_config)

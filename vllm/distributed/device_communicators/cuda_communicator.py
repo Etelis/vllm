@@ -824,6 +824,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
         if self.fi_pcie_ipc_ar_comm is not None:
             self.fi_pcie_ipc_ar_comm.destroy()
             self.fi_pcie_ipc_ar_comm = None
+        self.destroy_all2all_manager()
+
+    def destroy_all2all_manager(self) -> None:
         if self.all2all_manager is not None:
             self.all2all_manager.destroy()
             self.all2all_manager = None  # type: ignore[assignment]
