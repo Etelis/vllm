@@ -24,6 +24,7 @@ from contextlib import AbstractContextManager, nullcontext
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any, NamedTuple
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -1110,6 +1111,79 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             and self.cudagraph_manager.needs_capture()
         )
 
+    def supports_deferred_cudagraph_capture(self) -> bool:
+        """Whether capture_model() can be replaced by one capture per step."""
+        return (
+            self.cudagraph_manager is not None
+            and self.cudagraph_manager.needs_capture()
+            and not (
+                self.model_state.supports_mm_inputs
+                and self.model_state.encoder_runner.has_cudagraph()
+            )
+            and self.speculator is None
+            and self.lora_config is None
+            and self.pcp_manager is None
+            and self.ubatch_runner is None
+            and self.adaptive_verification is None
+        )
+
+    def defer_cudagraph_capture(self) -> None:
+        assert self.cudagraph_manager is not None
+        self.cudagraph_manager.defer_capture()
+        self._deferred_capture_start = time.perf_counter()
+
+    @torch.inference_mode()
+    def _capture_deferred_cudagraph(self) -> None:
+        """Capture the next deferred graph ahead of this step's DP sync.
+
+        Every DP rank runs the same steps, so all ranks capture the same graph
+        here and the expert all-to-all collectives in its warmup line up.
+        """
+        manager = self.cudagraph_manager
+        assert manager is not None
+        desc = manager.pop_deferred_capture()
+        # The previous step may still read the buffers the capture rewrites.
+        torch.accelerator.synchronize()
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            # Keep the serving allocator cache instead of releasing it per graph.
+            with (
+                self.eplb.suppress(),
+                patch("torch.accelerator.empty_cache", lambda *args, **kwargs: None),
+                patch.object(torch.cuda, "empty_cache", lambda *args, **kwargs: None),
+            ):
+                manager.capture(
+                    self.model,
+                    self.model_state,
+                    self.input_buffers,
+                    self.intermediate_tensors,
+                    self.block_tables,
+                    self.attn_groups,
+                    self.kv_cache_config,
+                    use_aux_hidden_state_outputs=self.use_aux_hidden_state_outputs,
+                    stream=manager.capture_stream,
+                    only=(desc,),
+                )
+                if not manager.has_deferred_capture():
+                    self.model_state.capture_inner_cudagraphs(
+                        self.input_buffers,
+                        self.block_tables,
+                        self.attn_groups,
+                        self.kv_cache_config,
+                        manager.capture_stream,
+                    )
+            self.kv_connector.reset_capture_state()
+            torch.accelerator.synchronize()
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+        if not manager.has_deferred_capture():
+            logger.info(
+                "Captured deferred CUDA graphs in %.1f secs",
+                time.perf_counter() - self._deferred_capture_start,
+            )
+
     @torch.inference_mode()
     def capture_model(self, *, profile_only: bool = False) -> int:
         assert self.cudagraph_manager is not None
@@ -1825,6 +1899,13 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 return self._merge_ec_connector_no_forward(
                     scheduler_output, empty_output
                 )
+
+        if (
+            self.cudagraph_manager is not None
+            and self.cudagraph_manager.has_deferred_capture()
+            and not is_profile
+        ):
+            self._capture_deferred_cudagraph()
 
         # Get batch descriptor and sync across DP ranks.
         num_reqs = len(scheduler_output.num_scheduled_tokens)

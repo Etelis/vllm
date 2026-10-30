@@ -629,6 +629,39 @@ def test_uniform_decode_beyond_capture_ladder_falls_back(monkeypatch):
     assert desc.cg_mode == CUDAGraphMode.NONE
 
 
+def test_deferred_capture_pads_to_captured_graphs(monkeypatch):
+    """Deferred capture replays only captured graphs, largest captured first."""
+    manager = _make_spec_decode_manager(monkeypatch, decode_query_len=1)
+    manager.defer_capture()
+
+    def dispatch(num_tokens, uniform_token_count):
+        desc = manager.dispatch(
+            num_reqs=num_tokens,
+            num_tokens=num_tokens,
+            uniform_token_count=uniform_token_count,
+            num_active_loras=0,
+        )
+        return desc.cg_mode, desc.num_tokens
+
+    def capture_next():
+        desc = manager.pop_deferred_capture()
+        manager._captured_descs.add(desc)
+        return desc.cg_mode, desc.num_tokens
+
+    assert dispatch(2, 1) == (CUDAGraphMode.NONE, 2)
+    assert capture_next() == (CUDAGraphMode.PIECEWISE, 24)
+    assert dispatch(2, 1) == (CUDAGraphMode.PIECEWISE, 24)
+    assert capture_next() == (CUDAGraphMode.PIECEWISE, 16)
+    assert capture_next() == (CUDAGraphMode.FULL, 8)
+    assert dispatch(2, 1) == (CUDAGraphMode.FULL, 8)
+    assert dispatch(3, None) == (CUDAGraphMode.PIECEWISE, 16)
+
+    while manager.has_deferred_capture():
+        capture_next()
+    assert dispatch(2, 1) == (CUDAGraphMode.FULL, 2)
+    assert dispatch(3, None) == (CUDAGraphMode.PIECEWISE, 4)
+
+
 def test_dynamic_spec_decode_shared_token_count_stays_reachable(monkeypatch):
     """Every captured decode graph must remain reachable from dispatch().
 

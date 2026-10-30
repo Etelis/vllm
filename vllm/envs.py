@@ -331,6 +331,7 @@ if TYPE_CHECKING:
     making the server model-name agnostic. Useful for proxy/gateway scenarios."""
     VLLM_ELASTIC_EP_SCALE_UP_LAUNCH: bool = False
     VLLM_ELASTIC_EP_DRAIN_REQUESTS: bool = False
+    VLLM_ELASTIC_EP_DEFER_CUDAGRAPH_CAPTURE: bool = True
     VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: bool = True
     VLLM_XPU_FORCE_N_CONTIG_WEIGHT: bool = False
     VLLM_XPU_USE_SAMPLER_KERNEL: bool = True
@@ -2256,6 +2257,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ELASTIC_EP_DRAIN_REQUESTS": lambda: bool(
         int(os.getenv("VLLM_ELASTIC_EP_DRAIN_REQUESTS", "0"))
     ),
+    # Whether elastic EP backends that recapture CUDA graphs on resize resume
+    # serving first and then capture one graph per step.
+    "VLLM_ELASTIC_EP_DEFER_CUDAGRAPH_CAPTURE": lambda: bool(
+        int(os.getenv("VLLM_ELASTIC_EP_DEFER_CUDAGRAPH_CAPTURE", "1"))
+    ),
     # If set to 1, enable CUDA graph memory estimation during memory profiling.
     # This profiles CUDA graph memory usage to provide more accurate KV cache
     # memory allocation. Enabled by default as of v0.21.0
@@ -2427,6 +2433,7 @@ def compile_factors() -> dict[str, object]:
         "VLLM_RAY_BUNDLE_INDICES",
         "VLLM_CHAT_TEMPLATE_FUEL",
         "VLLM_ELASTIC_EP_SCALE_UP_LAUNCH",
+        "VLLM_ELASTIC_EP_DEFER_CUDAGRAPH_CAPTURE",
         "VLLM_FORCE_AOT_LOAD",
         "S3_ACCESS_KEY_ID",
         "S3_SECRET_ACCESS_KEY",

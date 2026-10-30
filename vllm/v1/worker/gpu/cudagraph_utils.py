@@ -3,7 +3,7 @@
 import gc
 import itertools
 from collections import defaultdict
-from collections.abc import Callable, Hashable, Iterable, Sequence
+from collections.abc import Callable, Collection, Hashable, Iterable, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from itertools import groupby, product
@@ -178,6 +178,10 @@ class CudaGraphManager:
         self._lora_dispatch_map, self._max_lora_case = self._build_lora_dispatch_map()
 
         self.graphs: dict[BatchExecutionDescriptor, torch.cuda.CUDAGraph] = {}
+        # Descriptors of both modes with a captured graph, and the ones still
+        # waiting for deferred capture.
+        self._captured_descs: set[BatchExecutionDescriptor] = set()
+        self._deferred_descs: list[BatchExecutionDescriptor] = []
         self.pool = current_platform.get_global_graph_pool() if cudagraph_mode else None
         # The stream of the last capture; graphs replayed inside these ones (in
         # their eager breaks) can capture on it to share the pool's free blocks.
@@ -409,12 +413,43 @@ class CudaGraphManager:
         kept, so `needs_capture()` still reports the work to redo.
         """
         self.graphs.clear()
+        self._captured_descs.clear()
+        self._deferred_descs.clear()
         self._graphs_captured = False
         if self.breakable_cg_runner is not None:
             BreakableCUDAGraphWrapper.clear_all_graphs()
 
     def needs_capture(self) -> bool:
         return len(self._capture_descs) > 0
+
+    def defer_capture(self) -> None:
+        """Queue every graph for capture one per step instead of all at once.
+
+        Until a graph is captured, dispatch() pads to the smallest captured
+        graph that fits, or runs eagerly.
+        """
+        descs = [desc for descs in self._capture_descs.values() for desc in descs]
+        max_num_tokens = max((desc.num_tokens for desc in descs), default=0)
+
+        def priority(desc: BatchExecutionDescriptor) -> tuple[bool, bool, int, bool]:
+            # Largest graph first so every batch has one to pad to, then
+            # halving sizes so padding stays within 2x, then the rest.
+            n = desc.num_tokens
+            return (
+                n != max_num_tokens,
+                n & (n - 1) != 0,
+                -n,
+                desc.cg_mode != CUDAGraphMode.FULL,
+            )
+
+        self._deferred_descs = sorted(descs, key=priority)
+        self._graphs_captured = True
+
+    def has_deferred_capture(self) -> bool:
+        return len(self._deferred_descs) > 0
+
+    def pop_deferred_capture(self) -> BatchExecutionDescriptor:
+        return self._deferred_descs.pop(0)
 
     def _capture_stream(self, desc: BatchExecutionDescriptor) -> torch.cuda.Stream:
         """Capture on the stream used by the microbatch threads."""
@@ -429,6 +464,7 @@ class CudaGraphManager:
         create_forward_fn: CreateForwardFn,
         progress_bar_desc: str = "Capturing CUDA graphs",
         stream: torch.cuda.Stream | None = None,
+        only: Collection[BatchExecutionDescriptor] | None = None,
     ) -> None:
         """Capture CUDA graphs.
 
@@ -440,6 +476,7 @@ class CudaGraphManager:
                 metadata during warmup.
             progress_bar_desc: Description shown on the capture progress bar.
             stream: Capture on this stream instead of a new one.
+            only: Capture just these descriptors.
 
         """
         with graph_capture(self.device, stream) as context, ExitStack() as stack:
@@ -463,7 +500,9 @@ class CudaGraphManager:
                     # graphs; the total cost is extrapolated from their
                     # per-graph memory deltas.
                     descs = descs[: self._max_full_descs_to_capture]
-                if is_global_first_rank():
+                if only is not None:
+                    descs = [desc for desc in descs if desc in only]
+                elif is_global_first_rank():
                     descs = tqdm(descs, desc=f"{progress_bar_desc} ({mode.name})")
                 for desc in descs:
                     # Prepare inputs and get forward function
@@ -483,11 +522,13 @@ class CudaGraphManager:
                         and not self.use_breakable_cg
                     ):
                         forward_fn(CUDAGraphMode.PIECEWISE)
+                        self._captured_descs.add(desc)
                     else:
                         # Capture with fresh attention state.
                         forward_fn = create_forward_fn(desc, warmup=False)
                         if desc.cg_mode == CUDAGraphMode.PIECEWISE:
                             forward_fn(CUDAGraphMode.PIECEWISE)
+                            self._captured_descs.add(desc)
                             continue
                         assert desc not in self.graphs, (
                             f"Graph already captured for {desc}"
@@ -516,6 +557,7 @@ class CudaGraphManager:
                             free_after = torch.accelerator.get_memory_info()[0]
                             self._capture_mem_samples.append(free_before - free_after)
                         self.graphs[desc] = graph
+                        self._captured_descs.add(desc)
                         compilation_counter.num_cudagraph_captured += 1
 
         self._graphs_captured = True
@@ -539,7 +581,18 @@ class CudaGraphManager:
         effective_loras = self._resolve_effective_loras(num_active_loras)
         key = (num_tokens, effective_loras)
         if self._graphs_captured and num_tokens > 0 and key in self._candidates:
-            for desc in self._candidates[key]:
+            candidates = self._candidates[key]
+            if self._deferred_descs:
+                # Pad to the smallest captured graph that fits.
+                candidates = sorted(
+                    (
+                        desc
+                        for desc in self._captured_descs
+                        if desc.num_tokens >= num_tokens
+                    ),
+                    key=lambda d: (d.num_tokens, d.cg_mode != CUDAGraphMode.FULL),
+                )
+            for desc in candidates:
                 if _is_compatible(
                     desc,
                     num_reqs,
@@ -630,6 +683,8 @@ class ModelCudaGraphManager(CudaGraphManager):
         use_aux_hidden_state_outputs: bool = False,
         lora_capture_hook: Callable[[int, int, int], None] | None = None,
         progress_bar_desc: str = "Capturing CUDA graphs",
+        stream: torch.cuda.Stream | None = None,
+        only: Collection[BatchExecutionDescriptor] | None = None,
     ) -> None:
         """Capture CUDA graphs for model forward pass."""
         self.use_aux_hidden_state_outputs = use_aux_hidden_state_outputs
@@ -791,7 +846,7 @@ class ModelCudaGraphManager(CudaGraphManager):
 
             return forward_fn
 
-        super().capture(create_forward_fn, progress_bar_desc)
+        super().capture(create_forward_fn, progress_bar_desc, stream=stream, only=only)
 
     def run_fullgraph(
         self, desc: BatchExecutionDescriptor

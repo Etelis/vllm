@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 from torch.distributed import P2POp
 
+import vllm.envs as envs
 from vllm.compilation.breakable_cudagraph import BreakableCUDAGraphWrapper
 from vllm.compilation.cuda_graph import CUDAGraphWrapper
 from vllm.compilation.wrapper import reset_compile_wrapper
@@ -765,6 +766,14 @@ class ElasticEPScalingExecutor:
         runner = self.worker.model_runner
         all2all_manager = get_ep_all2all_manager()
         reuse_kernel = self._can_reuse_fused_moe_kernel()
+        # Resume serving before recapturing; every rank then captures one graph
+        # per step in lockstep.
+        defer_capture = (
+            not reuse_kernel
+            and envs.VLLM_ELASTIC_EP_DEFER_CUDAGRAPH_CAPTURE
+            and self.worker.use_v2_model_runner
+            and runner.supports_deferred_cudagraph_capture()
+        )
         serving_state = (
             preserve_serving_state(runner)
             if self.worker.use_v2_model_runner
@@ -783,6 +792,6 @@ class ElasticEPScalingExecutor:
                 skip_eplb=True,
                 randomize_inputs=self.worker.randomize_dummy_inputs,
             )
-            self.worker.compile_or_warm_up_model()
+            self.worker.compile_or_warm_up_model(defer_cudagraph_capture=defer_capture)
 
         lock_workspace()

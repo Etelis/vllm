@@ -933,14 +933,18 @@ class Worker(WorkerBase):
         return connector.get_aligned_num_cpu_blocks()
 
     @instrument(span_name="Warmup (GPU)")
-    def compile_or_warm_up_model(self) -> CompilationTimes:
+    def compile_or_warm_up_model(
+        self, defer_cudagraph_capture: bool = False
+    ) -> CompilationTimes:
         if not self.use_v2_model_runner:
-            return self._compile_or_warm_up_model()
+            return self._compile_or_warm_up_model(defer_cudagraph_capture)
         # MRV2 warmup forwards record expert load like real ones.
         with self.model_runner.eplb.suppress():  # type: ignore
-            return self._compile_or_warm_up_model()
+            return self._compile_or_warm_up_model(defer_cudagraph_capture)
 
-    def _compile_or_warm_up_model(self) -> CompilationTimes:
+    def _compile_or_warm_up_model(
+        self, defer_cudagraph_capture: bool = False
+    ) -> CompilationTimes:
         warmup_sizes: list[int] = []
 
         if (
@@ -992,13 +996,17 @@ class Worker(WorkerBase):
                 )
 
         cuda_graph_memory_bytes = 0
-        if not self.model_config.enforce_eager:
+        if defer_cudagraph_capture:
+            # Serving captures the graphs one per step from here on.
+            cast("GPUModelRunnerV2", self.model_runner).defer_cudagraph_capture()
+        elif not self.model_config.enforce_eager:
             with self._get_cudagraph_capture_context():
                 cuda_graph_memory_bytes = self.model_runner.capture_model()
 
         # Compare actual vs estimated CUDA graph memory (if we did profiling)
         if (
-            hasattr(self, "cudagraph_memory_estimate")
+            not defer_cudagraph_capture
+            and hasattr(self, "cudagraph_memory_estimate")
             and self.cudagraph_memory_estimate > 0
         ):
             GiB = lambda b: round(b / GiB_bytes, 2)
@@ -1012,8 +1020,10 @@ class Worker(WorkerBase):
                 100 * diff / max(cuda_graph_memory_bytes, 1),
             )
 
-        if self.cache_config.kv_cache_memory_bytes is None and hasattr(
-            self, "peak_activation_memory"
+        if (
+            not defer_cudagraph_capture
+            and self.cache_config.kv_cache_memory_bytes is None
+            and hasattr(self, "peak_activation_memory")
         ):
             # Suggests optimal kv cache memory size if we rely on
             # memory_profiling to guess the kv cache memory size which
