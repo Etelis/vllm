@@ -671,7 +671,8 @@ class ElasticEPScalingExecutor:
         else:
             retired_groups = self.switch_and_prepare()
             if not self._can_reuse_fused_moe_kernel():
-                self.warm_and_capture(graphs_released=True)
+                # Every survivor ran the JIT warmup at startup or when it joined.
+                self.warm_and_capture(graphs_released=True, skip_jit_warmup=True)
             elif current_platform.is_rocm():
                 # Reuse path skips warm_and_capture; warm the deferred groups here.
                 self._warm_target_groups(get_dp_group(), get_ep_group())
@@ -757,7 +758,9 @@ class ElasticEPScalingExecutor:
             self.worker.trigger_inductor_lazy_init()
             freeze_gc_heap()
 
-    def warm_and_capture(self, *, graphs_released: bool = False) -> None:
+    def warm_and_capture(
+        self, *, graphs_released: bool = False, skip_jit_warmup: bool = False
+    ) -> None:
         # _ensure_workspace_size allocates a fresh tensor on grow, leaving
         # any captured CUDA graph with a stale data pointer; drop graphs
         # before re-warm so captures realign with the resized buffer.
@@ -794,6 +797,9 @@ class ElasticEPScalingExecutor:
                 skip_eplb=True,
                 randomize_inputs=self.worker.randomize_dummy_inputs,
             )
-            self.worker.compile_or_warm_up_model(defer_cudagraph_capture=defer_capture)
+            self.worker.compile_or_warm_up_model(
+                defer_cudagraph_capture=defer_capture,
+                skip_jit_warmup=defer_capture and skip_jit_warmup,
+            )
 
         lock_workspace()

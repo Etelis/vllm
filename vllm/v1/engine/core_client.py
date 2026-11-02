@@ -23,6 +23,7 @@ import zmq.asyncio
 from vllm import envs
 from vllm.config import VllmConfig
 from vllm.config.kv_events import KVEventsConfig
+from vllm.distributed.elastic_ep import can_reuse_fused_moe_kernel
 from vllm.distributed.elastic_ep.external_elastic_ep import (
     ExternalElasticEPScaleCoordinator,
 )
@@ -1640,10 +1641,6 @@ class DPAsyncMPClient(AsyncMPClient):
         return self.core_engine
 
     def _eep_commit_pause_mode(self) -> PauseMode:
-        # Importing elastic_execute here would block the event loop for about a
-        # second on the first resize.
-        from vllm.distributed.elastic_ep import can_reuse_fused_moe_kernel
-
         # MRV2 re-warms through the request pool, so running requests must
         # finish first while new ones stay queued in the scheduler.
         parallel_config = self.vllm_config.parallel_config

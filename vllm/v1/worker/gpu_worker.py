@@ -934,16 +934,20 @@ class Worker(WorkerBase):
 
     @instrument(span_name="Warmup (GPU)")
     def compile_or_warm_up_model(
-        self, defer_cudagraph_capture: bool = False
+        self, defer_cudagraph_capture: bool = False, skip_jit_warmup: bool = False
     ) -> CompilationTimes:
         if not self.use_v2_model_runner:
-            return self._compile_or_warm_up_model(defer_cudagraph_capture)
+            return self._compile_or_warm_up_model(
+                defer_cudagraph_capture, skip_jit_warmup
+            )
         # MRV2 warmup forwards record expert load like real ones.
         with self.model_runner.eplb.suppress():  # type: ignore
-            return self._compile_or_warm_up_model(defer_cudagraph_capture)
+            return self._compile_or_warm_up_model(
+                defer_cudagraph_capture, skip_jit_warmup
+            )
 
     def _compile_or_warm_up_model(
-        self, defer_cudagraph_capture: bool = False
+        self, defer_cudagraph_capture: bool = False, skip_jit_warmup: bool = False
     ) -> CompilationTimes:
         warmup_sizes: list[int] = []
 
@@ -988,9 +992,7 @@ class Worker(WorkerBase):
         # cuda graph capture.
         kernel_warmup(self)
 
-        # A deferred elastic EP commit holds every rank; serving and the
-        # deferred captures exercise these kernels right after it.
-        if self.use_v2_model_runner and not defer_cudagraph_capture:  # noqa: SIM102
+        if self.use_v2_model_runner and not skip_jit_warmup:  # noqa: SIM102
             if self.vllm_config.kernel_config.enable_jit_warmup:
                 # A workspace resize after capture frees what the graphs point at.
                 warmup_kernels(
