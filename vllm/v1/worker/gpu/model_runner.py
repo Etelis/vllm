@@ -1148,7 +1148,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         assert manager is not None
         desc = manager.pop_deferred_capture()
         # The previous step may still read the buffers the capture rewrites.
-        torch.accelerator.synchronize()
+        # Wait only for this thread's streams: background work, e.g. the async
+        # expert transfer, keeps running while serving.
+        torch.accelerator.current_stream().synchronize()
         # No graph holds workspace pointers yet, so the first capture may still
         # allocate, e.g. stream-keyed resources on a joiner's new capture stream.
         relock = (
@@ -1164,12 +1166,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         thread_local_graph = functools.partial(
             torch.cuda.graph, capture_error_mode="thread_local"
         )
+
+        def sync_capture_stream(*args, **kwargs) -> None:
+            torch.accelerator.current_stream().synchronize()
+
         try:
-            # Keep the serving allocator cache instead of releasing it per graph.
+            # Keep the serving allocator caches instead of releasing them per
+            # graph, and sync only the capture stream when a graph begins.
             with (
                 self.eplb.suppress(),
                 patch("torch.accelerator.empty_cache", lambda *args, **kwargs: None),
                 patch.object(torch.cuda, "empty_cache", lambda *args, **kwargs: None),
+                patch.object(torch._C, "_host_emptyCache", lambda: None),
+                patch.object(torch.cuda, "synchronize", sync_capture_stream),
                 patch.object(torch.cuda, "graph", thread_local_graph),
             ):
                 manager.capture(
@@ -1193,7 +1202,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                         manager.capture_stream,
                     )
             self.kv_connector.reset_capture_state()
-            torch.accelerator.synchronize()
+            assert manager.capture_stream is not None
+            manager.capture_stream.synchronize()
         finally:
             if relock:
                 lock_workspace()
