@@ -54,7 +54,7 @@ from vllm.model_executor.warmup.flashinfer_autotune_cache import (
 )
 from vllm.model_executor.warmup.kernel_warmup import kernel_warmup
 from vllm.platforms import current_platform
-from vllm.utils import is_moe_layer
+from vllm.utils import is_moe_layer, jit_monitor
 from vllm.utils.gc_utils import freeze_gc_heap
 from vllm.v1.engine import ReconfigureDistributedRequest, ReconfigureRankType
 from vllm.v1.worker.dp_utils import skip_dp_coordination
@@ -797,6 +797,7 @@ class ElasticEPScalingExecutor:
             # The commit warmup holds every rank, so run its once-per-process
             # tail on this rank beforehand.
             self.worker.trigger_inductor_lazy_init()
+            jit_monitor.preload()
             freeze_gc_heap()
 
     def warm_and_capture(

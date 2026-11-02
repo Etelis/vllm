@@ -155,6 +155,13 @@ def test_activate_rejects_unknown_mode():
         jit_monitor.activate(mode="panic")
 
 
+def test_preload_imports_without_activating():
+    with mock.patch.object(jit_monitor.importlib, "import_module") as m:
+        jit_monitor.preload()
+    assert "cutlass.cute" in [call.args[0] for call in m.call_args_list]
+    assert not jit_monitor.is_active()
+
+
 def test_activate_without_triton():
     with mock.patch.object(jit_monitor, "HAS_TRITON", False):
         jit_monitor.activate()

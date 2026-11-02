@@ -88,6 +88,20 @@ def activate(*, mode: JitMonitorMode = "warn", verbose: bool = False) -> None:
     )
 
 
+def preload() -> None:
+    """Import the monitored JIT frameworks so a later :func:`activate` is cheap.
+
+    Elastic EP joiners activate the monitor inside a resize commit, which holds
+    every rank, so they import these slow modules beforehand.
+    """
+    names = ["cutlass.cute"]
+    if not current_platform.is_rocm():
+        names += ["tilelang.jit.kernel", "tilelang.jit"]
+    for name in names:
+        with suppress(Exception):
+            importlib.import_module(name)
+
+
 # ------------------------------------------------------------------
 # Triton autotuning print
 # ------------------------------------------------------------------
