@@ -267,6 +267,9 @@ class GhostWatchdog:
 
     def clear_missing(self) -> None:
         self.dead, self.extra, self._safe_from = set(), set(), {}
+        self.clear_left()
+
+    def clear_left(self) -> None:
         self._board[self._rank, _LEFT] = 0
 
     def announce_left(self) -> None:

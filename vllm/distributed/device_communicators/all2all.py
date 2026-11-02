@@ -1408,6 +1408,9 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         if self._ghost is not None:
             # Ghost-mode workspaces are reset in apply_dead_ranks
             self._ghost.stop()
+            # Cleared before recovery's rendezvous, so no rank resumes while a
+            # peer still looks left
+            self._ghost.clear_left()
         self._last_mask = None
 
     def update_mask(self, rank: int, masked: bool = True) -> None:
