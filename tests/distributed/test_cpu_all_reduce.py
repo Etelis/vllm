@@ -118,11 +118,13 @@ def _poison_worker(rank: int, world_size: int, port: int):
         poison_cpu_all_reduce(pg, _make_input(rank, world_size, 0))
         time.sleep(5)
         return
-    t = _make_input(rank, world_size, 0)
-    start = time.monotonic()
-    with pytest.raises(RuntimeError, match="CPU all-reduce peer"):
-        cpu_all_reduce_(t, pg, timeout=timedelta(seconds=30))
-    assert time.monotonic() - start < 3
+    # A peer may step again before noticing the fault: both calls fail fast.
+    for step in range(2):
+        t = _make_input(rank, world_size, step)
+        start = time.monotonic()
+        with pytest.raises(RuntimeError, match="CPU all-reduce peer"):
+            cpu_all_reduce_(t, pg, timeout=timedelta(seconds=30))
+        assert time.monotonic() - start < 3
 
 
 # 4: recursive doubling, where rank 3 is poisoned by rank 1, not rank 0.

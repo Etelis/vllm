@@ -85,24 +85,32 @@ def _send_poison(
     mask: int,
     block_size: int,
     tag: int,
+    copies: int = 1,
 ) -> None:
     """After a failed round, send the peers of this rank's remaining rounds a
-    poison tensor, so they fail at once instead of timing out on this rank."""
+    poison tensor, so they fail at once instead of timing out on this rank.
+    Each copy matches one call (all calls use the same tags)."""
     buf = torch.full_like(tensor, poison)
     while mask < block_size:
-        with contextlib.suppress(Exception):
-            _poison_sends.append((buf, group.send([buf], rank ^ mask, tag)))
+        for _ in range(copies):
+            with contextlib.suppress(Exception):
+                _poison_sends.append((buf, group.send([buf], rank ^ mask, tag)))
         mask <<= 1
         tag += 1
-    del _poison_sends[:-64]
+    del _poison_sends[:-256]
 
 
-def poison_cpu_all_reduce(group: ProcessGroup, like: torch.Tensor) -> None:
-    """Poison this rank's part of the next cpu_all_reduce_ on ``group``.
+def poison_cpu_all_reduce(
+    group: ProcessGroup, like: torch.Tensor, copies: int = 8
+) -> None:
+    """Poison this rank's part of the next ``copies`` cpu_all_reduce_ calls on
+    ``group``.
 
     For a rank that faulted outside the collective: peers blocked on it there
-    fail at once instead of waiting out the gloo timeout. ``like`` has the
-    shape and integer dtype of the reduced tensor.
+    fail at once instead of waiting out the gloo timeout, including peers that
+    step again before noticing the fault. Fault-tolerance recovery rebuilds the
+    group, which drops unused copies. ``like`` has the shape and integer dtype
+    of the reduced tensor.
     """
     world_size = group.size()
     if world_size == 1:
@@ -110,13 +118,17 @@ def poison_cpu_all_reduce(group: ProcessGroup, like: torch.Tensor) -> None:
     block_size = world_size & -world_size
     rank = group.rank()
     poison = torch.iinfo(like.dtype).min
-    _send_poison(group, like, poison, rank, 1, block_size, _CPU_ALL_REDUCE_TAG_BASE)
+    _send_poison(
+        group, like, poison, rank, 1, block_size, _CPU_ALL_REDUCE_TAG_BASE, copies
+    )
     if world_size // block_size > 1:
         tag = _CPU_ALL_REDUCE_TAG_BASE + block_size.bit_length() - 1
         buf = torch.full_like(like, poison)
         lane, my_block = rank % block_size, rank // block_size
         for b in range(world_size // block_size):
-            if b != my_block:
+            if b == my_block:
+                continue
+            for _ in range(copies):
                 with contextlib.suppress(Exception):
                     work = group.send([buf], b * block_size + lane, tag)
                     _poison_sends.append((buf, work))
