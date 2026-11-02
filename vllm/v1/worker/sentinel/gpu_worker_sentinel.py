@@ -236,8 +236,13 @@ class WorkerSentinel:
 
     def query_mask(self, ft_request: FaultToleranceRequest) -> dict:
         """Query the mask on a side stream."""
+        all2all_manager = get_ep_all2all_manager()
+        # Sent when this engine faults: peers stuck waiting on it can stop now
+        announce = getattr(all2all_manager, "announce_fault", None)
+        if announce is not None:
+            announce()
         with torch.cuda.stream(torch.cuda.Stream()):
-            mask = get_ep_all2all_manager().query_active_mask()
+            mask = all2all_manager.query_active_mask()
             return {"mask": mask.tolist()}
 
     def _reinit_eplb_groups(self, store: TCPStore, round_key: str) -> None:

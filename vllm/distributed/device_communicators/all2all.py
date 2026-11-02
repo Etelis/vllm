@@ -1351,6 +1351,11 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         if self._ghost is not None:
             self._ghost.steady = True
 
+    def announce_fault(self) -> None:
+        """This rank's engine faulted and stopped stepping (host memory only)."""
+        if self._ghost is not None:
+            self._ghost.announce_left()
+
     def query_active_mask(self) -> torch.Tensor:
         if self._ghost is not None and not self._masked_buffers:
             # Host copy: reading the device mask could wait, holding the GIL,

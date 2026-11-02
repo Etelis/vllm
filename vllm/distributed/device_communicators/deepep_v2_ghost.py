@@ -31,8 +31,10 @@ from vllm.utils.math_utils import cdiv
 logger = init_logger(__name__)
 
 _MAX_RANKS, _MAX_EXPERTS, _MAX_EXPERTS_PER_RANK = 1024, 2048, 256
-# Buffers per board row (shared barrier counters of all ranks)
+# Buffers per board row (shared barrier counters of all ranks), then a flag
+# a rank sets when it left a step on a fault
 _MAX_GHOSTS = 16
+_LEFT = _MAX_GHOSTS
 # A rank whose last step started longer ago than this may be stuck: poll it
 _POLL_AFTER_SECS = 1.0
 # int32 signal[phase] at (2 + phase) * 4; int64 counter at 0
@@ -206,7 +208,7 @@ class GhostWatchdog:
         # Every rank's barrier counters, by original EP rank and buffer
         self._rank = rank
         self._board = np.memmap(
-            board_path, dtype=np.int64, mode="r+", shape=(world_size, _MAX_GHOSTS)
+            board_path, dtype=np.int64, mode="r+", shape=(world_size, _MAX_GHOSTS + 1)
         )
         # GPU polling of a healthy rank waits for steady state: a CUDA call from
         # this thread would invalidate a globally captured CUDA graph
@@ -265,6 +267,12 @@ class GhostWatchdog:
 
     def clear_missing(self) -> None:
         self.dead, self.extra, self._safe_from = set(), set(), {}
+        self._board[self._rank, _LEFT] = 0
+
+    def announce_left(self) -> None:
+        """This rank left a step on a fault: peers stuck on it play it at once
+        instead of after silent_secs."""
+        self._board[self._rank, _LEFT] = 1
 
     def set_mask(self, dead_ep_ranks: list[int]) -> None:
         """Mask in original EP numbering, kept equal to the replayed dead set."""
@@ -364,7 +372,8 @@ class GhostWatchdog:
         if idx not in stalled or stalled[idx][0] != state:
             stalled[idx] = (state, now)
             return
-        if now - stalled[idx][1] < self.silent_secs:
+        stalled_for = now - stalled[idx][1]
+        if stalled_for < self.stable_secs:
             return
         barrier = counter - 1
         phase, sign = barrier & 1, (barrier >> 1) & 1
@@ -378,15 +387,18 @@ class GhostWatchdog:
         ]
         if short == 0 or not behind:
             return
+        left = all(self._board[self.ranks[i], _LEFT] for i in behind)
+        if stalled_for < self.silent_secs and not left:
+            return
         for i in behind:
             self._mask_h[self.ranks[i]] = 1
         self._copy(self.mask, self._mask_h)
         self._copy(self.fault_flag, self._true_h)
         self.extra |= set(behind)
         logger.warning(
-            "[FT] DeepEP v2 ghost: EP ranks %s silent for %.0f s; playing their part",
+            "[FT] DeepEP v2 ghost: EP ranks %s %s; playing their part",
             [self.ranks[i] for i in behind],
-            now - stalled[idx][1],
+            "left on a fault" if left else f"silent for {stalled_for:.0f} s",
         )
 
     def _release(
@@ -437,7 +449,7 @@ def same_host_peers(cpu_group) -> tuple[list[int], str] | None:
     if cpu_group.rank() == 0:
         board = f"/dev/shm/vllm-deepep-v2-ghost-{uuid.uuid4().hex}"
         with open(board, "wb") as f:
-            f.truncate(cpu_group.size() * _MAX_GHOSTS * 8)
+            f.truncate(cpu_group.size() * (_MAX_GHOSTS + 1) * 8)
     entries: list = [None] * cpu_group.size()
     host = socket.gethostname()
     dist.all_gather_object(entries, (host, os.getpid(), board), cpu_group)
