@@ -27,16 +27,20 @@ import torch
 from vllm.logger import init_logger
 from vllm.triton_utils import tl, triton
 from vllm.utils.math_utils import cdiv
+from vllm.utils.torch_utils import current_stream
 
 logger = init_logger(__name__)
 
 _MAX_RANKS, _MAX_EXPERTS, _MAX_EXPERTS_PER_RANK = 1024, 2048, 256
 # Buffers per board row (shared barrier counters of all ranks), then a flag
-# a rank sets when it left a step on a fault
+# a rank sets when it left a step on a fault, raised once its GPU drained
 _MAX_GHOSTS = 16
 _LEFT = _MAX_GHOSTS
+_LEFT_ANNOUNCED, _LEFT_DRAINED = 1, 2
 # A rank whose last step started longer ago than this may be stuck: poll it
 _POLL_AFTER_SECS = 1.0
+# Barrier from which dead ranks are played, until their GPUs are seen stopped
+_UNPROVEN = 1 << 62
 # int32 signal[phase] at (2 + phase) * 4; int64 counter at 0
 _OFF_SIGNALS = 8
 # int64 receive rank counts, then expert counts
@@ -228,7 +232,7 @@ class GhostWatchdog:
         self.extra: set[int] = set()
         # Dead ranks already played by the pre-op kernels
         self.covered: set[int] = set()
-        # Per buffer: first barrier released without waiting for a stall
+        # Per buffer: first barrier at which the dead ranks' GPUs had stopped
         self._safe_from: dict[int, int] = {}
         self.mask = torch.zeros(world_size, dtype=torch.int32, device="cuda")
         self._mask_h = torch.zeros(world_size, dtype=torch.int32, pin_memory=True)
@@ -243,6 +247,8 @@ class GhostWatchdog:
         self._device = torch.accelerator.current_device_index()
         # The side stream and event are shared with recovery-time reads
         self._copy_lock = threading.Lock()
+        # Completes once this rank's launched work drained, after it left
+        self._drained: torch.cuda.Event | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -270,12 +276,18 @@ class GhostWatchdog:
         self.clear_left()
 
     def clear_left(self) -> None:
+        self._drained = None
         self._board[self._rank, _LEFT] = 0
 
     def announce_left(self) -> None:
-        """This rank left a step on a fault: peers stuck on it play it at once
-        instead of after silent_secs."""
-        self._board[self._rank, _LEFT] = 1
+        """This rank left a step on a fault (main thread). Once its launched
+        work drains, peers stuck on it play it at once instead of after
+        silent_secs; until then it may still arrive itself."""
+        self._drained = torch.cuda.Event()
+        self._drained.record(current_stream())
+        self._board[self._rank, _LEFT] = _LEFT_ANNOUNCED
+        # Watch the drain now rather than after _POLL_AFTER_SECS
+        self.heartbeat = 0.0
 
     def set_mask(self, dead_ep_ranks: list[int]) -> None:
         """Mask in original EP numbering, kept equal to the replayed dead set."""
@@ -311,6 +323,7 @@ class GhostWatchdog:
         torch.accelerator.set_device_index(self._device)
         stalled: dict[int, tuple[tuple, float]] = {}
         ghosted: set[tuple[int, int]] = set()
+        proving: dict[int, tuple[tuple, float]] = {}
         released, last_detect = 0, 0.0
         while not self._stop.is_set():
             missing: set[int] = set()
@@ -318,6 +331,10 @@ class GhostWatchdog:
                 if time.monotonic() - last_detect >= 0.02:
                     self._detect()
                     last_detect = time.monotonic()
+                drained = self._drained
+                if drained is not None and drained.query():
+                    self._board[self._rank, _LEFT] = _LEFT_DRAINED
+                    self._drained = None
                 missing = self.dead | self.extra
                 pending = time.monotonic() - self.heartbeat > _POLL_AFTER_SECS
                 if not (missing or (self.steady and pending)):
@@ -332,7 +349,13 @@ class GhostWatchdog:
                     self._board[self._rank, idx] = counter
                     if missing:
                         released += self._release(
-                            idx, ghost, counter, signals, len(missing), stalled, ghosted
+                            idx,
+                            ghost,
+                            counter,
+                            signals,
+                            len(missing),
+                            ghosted,
+                            proving,
                         )
                     else:
                         self._check_silent(idx, ghost, counter, signals, stalled)
@@ -359,11 +382,9 @@ class GhostWatchdog:
             self._mask_h[self.ranks[i]] = 1
         self._copy(self.mask, self._mask_h)
         self._copy(self.fault_flag, self._true_h)
-        # A dead rank can have arrived at most at the barrier a survivor was
-        # entering when it died; later barriers can be released at once.
-        for idx, ghost in enumerate(self.ghosts):
-            self._copy(self._counter_h, ghost.counter)
-            self._safe_from[idx] = int(self._counter_h[0]) + 1
+        # Its GPU work can outlive the process: release nothing until it stopped
+        for idx in range(len(self.ghosts)):
+            self._safe_from[idx] = _UNPROVEN
         self.dead.update(newly)
         logger.warning(
             "[FT] DeepEP v2 ghost: EP ranks %s died; playing their part",
@@ -390,7 +411,7 @@ class GhostWatchdog:
         ]
         if short == 0 or not behind:
             return
-        left = all(self._board[self.ranks[i], _LEFT] for i in behind)
+        left = all(self._board[self.ranks[i], _LEFT] == _LEFT_DRAINED for i in behind)
         if stalled_for < self.silent_secs and not left:
             return
         for i in behind:
@@ -404,19 +425,35 @@ class GhostWatchdog:
             "left on a fault" if left else f"silent for {stalled_for:.0f} s",
         )
 
+    def _peers_entered(self, idx: int, barrier: int) -> bool:
+        """Every peer not played has entered ``barrier`` (so arrived there)."""
+        played = self.dead | self.extra | self.covered
+        return all(
+            self._board[r, idx] > barrier
+            for i, r in enumerate(self.ranks)
+            if r != self._rank and i not in played
+        )
+
     def _release(
-        self, idx, ghost, counter, signals, num_missing, stalled, ghosted
+        self, idx, ghost, counter, signals, num_missing, ghosted, proving
     ) -> int:
         barrier = counter - 1
         if self.dead and barrier < self._safe_from.get(idx, 0):
-            # The dead rank may have arrived here before dying. Once the kernel
-            # has made no progress for stable_secs, every live rank has arrived.
+            # The dead ranks' GPUs have stopped once this kernel made no
+            # progress for stable_secs with every live peer at this barrier: a
+            # running one would have arrived (or passed it) within microseconds.
             state, now = (counter, tuple(signals)), time.monotonic()
-            if idx not in stalled or stalled[idx][0] != state:
-                stalled[idx] = (state, now)
+            if proving.get(idx, (None,))[0] != state or not self._peers_entered(
+                idx, barrier
+            ):
+                proving[idx] = (state, now)
                 return 0
-            if now - stalled[idx][1] < self.stable_secs:
+            if now - proving[idx][1] < self.stable_secs:
                 return 0
+            self._safe_from[idx] = barrier
+            logger.info(
+                "[FT] DeepEP v2 ghost: dead ranks stopped at barrier %d", barrier
+            )
         phase, sign = barrier & 1, (barrier >> 1) & 1
         short = ghost.num_ranks - signals[phase] if sign == 0 else signals[phase]
         # Exactly the played ranks are missing, so every live rank has arrived
