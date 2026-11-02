@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import weakref
 from collections.abc import Callable
 
 import deep_ep
@@ -65,6 +66,10 @@ def _unpack_mxfp8_scale(
     if is_scale_swizzled:
         scale = swizzle_mxfp8_scale(scale, M=scale.size(0), K=hidden_size)
     return scale
+
+
+# Live instances, so a fault-tolerance rebuild can swap in new buffers
+_INSTANCES: "weakref.WeakSet[DeepEPV2PrepareAndFinalize]" = weakref.WeakSet()
 
 
 class DeepEPV2PrepareAndFinalize(mk.FusedMoEPrepareAndFinalizeModular):
@@ -139,6 +144,20 @@ class DeepEPV2PrepareAndFinalize(mk.FusedMoEPrepareAndFinalizeModular):
         # is built once per device instead of once per layer per step.
         self._global_expert_ids_cache: torch.Tensor | None = None
 
+        # Set when fault tolerance rebuilt the buffer over the surviving ranks:
+        # physical expert IDs map onto the smaller world for dispatch only.
+        self._expert_remap: torch.Tensor | None = None
+        self._dispatch_num_experts: int | None = None
+        _INSTANCES.add(self)
+
+    @staticmethod
+    def instances() -> list["DeepEPV2PrepareAndFinalize"]:
+        return list(_INSTANCES)
+
+    def set_expert_remap(self, remap: torch.Tensor, num_experts: int) -> None:
+        self._expert_remap = remap
+        self._dispatch_num_experts = num_experts
+
     def num_dispatchers(self) -> int:
         return self.num_dispatchers_
 
@@ -211,6 +230,16 @@ class DeepEPV2PrepareAndFinalize(mk.FusedMoEPrepareAndFinalizeModular):
                 n = tokens.shape[0]
             num_max_tokens_per_rank = 1 << max(n - 1, 0).bit_length()
 
+        dispatch_num_experts = num_experts
+        if self._expert_remap is not None:
+            assert self._dispatch_num_experts is not None
+            rank_topk_ids = torch.where(
+                rank_topk_ids >= 0,
+                self._expert_remap[rank_topk_ids.clamp(min=0)],
+                -1,
+            )
+            dispatch_num_experts = self._dispatch_num_experts
+
         (
             recv_x,
             recv_topk_idx,
@@ -221,7 +250,7 @@ class DeepEPV2PrepareAndFinalize(mk.FusedMoEPrepareAndFinalizeModular):
             x=token_data,
             topk_idx=rank_topk_ids,
             topk_weights=rank_topk_weights,
-            num_experts=num_experts,
+            num_experts=dispatch_num_experts,
             num_max_tokens_per_rank=num_max_tokens_per_rank,
             do_expand=do_expand,
             do_cpu_sync=do_cpu_sync,

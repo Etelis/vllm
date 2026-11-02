@@ -137,7 +137,6 @@ class WorkerSentinel:
                 group.cpu_timeout = timeout
 
     def retry(self, ft_request: FaultToleranceRequest):
-        torch.accelerator.synchronize()
         params = ft_request.params
         # After a scale_down the DP master may be re-elected and the rebuilt
         # gloo group is dense over the alive slots.
@@ -146,6 +145,18 @@ class WorkerSentinel:
         dp_group_size = params["dp_group_size"]
         round_key = params["recovery_round"]
         store = get_cached_tcp_store_client(master_ip, params["recovery_store_port"])
+        tp_size = self.worker.parallel_config.tensor_parallel_size
+        pcp_size = self.worker.parallel_config.prefill_context_parallel_size
+        dead_ep_ranks = compute_dead_ep_ranks(
+            params["dead_dp_ranks"], tp_size, pcp_size
+        )
+        if self.worker.parallel_config.data_parallel_size > 1:
+            # Without rank masking, kernels stuck on peers that left the step
+            # must be released before the device can sync.
+            release = getattr(get_ep_all2all_manager(), "release_stuck_kernels", None)
+            if release is not None:
+                release(store, round_key, dead_ep_ranks)
+        torch.accelerator.synchronize()
         self._clean_worker_state()
         reset_eplb_async_state(self.worker.model_runner)
         if self.worker.parallel_config.data_parallel_size > 1:
@@ -163,13 +174,13 @@ class WorkerSentinel:
             get_dp_group().dead_dp_ranks = set(params["dead_dp_ranks"])
 
             # clean_buffers wiped the mask; replay masks for the cumulative dead set.
-            tp_size = self.worker.parallel_config.tensor_parallel_size
-            pcp_size = self.worker.parallel_config.prefill_context_parallel_size
             all2all_manager = get_ep_all2all_manager()
-            for ep_rank in compute_dead_ep_ranks(
-                params["dead_dp_ranks"], tp_size, pcp_size
-            ):
+            for ep_rank in dead_ep_ranks:
                 all2all_manager.update_mask(ep_rank, masked=True)
+            # Without rank masking, the buffers are rebuilt over the survivors
+            apply = getattr(all2all_manager, "apply_dead_ranks", None)
+            if apply is not None:
+                apply(store, round_key)
 
             if (
                 self.worker.parallel_config.enable_eplb

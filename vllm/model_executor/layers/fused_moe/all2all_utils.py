@@ -299,7 +299,12 @@ def maybe_make_prepare_finalize(
         )
         handle = all2all_manager.get_handle(all_to_all_args)
         vllm_config = get_current_vllm_config()
-        use_cudagraph = not vllm_config.model_config.enforce_eager
+        # Fault tolerance without DeepEP rank masking dispatches without CPU
+        # sync: DeepEP's CPU wait holds the GIL, starving the ghost watchdog.
+        use_cudagraph = not vllm_config.model_config.enforce_eager or (
+            vllm_config.parallel_config.enable_fault_tolerance
+            and not hasattr(handle, "set_rank_mask_enabled")
+        )
 
         prepare_finalize = DeepEPV2PrepareAndFinalize(
             buffer=handle,

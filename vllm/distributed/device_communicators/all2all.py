@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import os
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -1214,9 +1215,18 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         self.support_fault_tolerance = (
             get_current_vllm_config().parallel_config.enable_fault_tolerance
         )
-        # Masked buffers, kept alive for the fault-tolerance queries
+        # Fault tolerance: rank-masked buffers when DeepEP supports it, else a
+        # ghost watchdog that plays dead peers (deepep_v2_ghost.py) and a
+        # rebuild over the survivors on scale-down
         self._masked_buffers: list[Any] = []
         self._last_mask: torch.Tensor | None = None
+        self._ghost: Any = None
+        # (handle, DeepEP kwargs, num_experts) per ghost-watched buffer
+        self._ghost_buffers: list[tuple[Any, dict, int]] = []
+        # Original EP ranks in the buffers' world, and the dead EP ranks
+        self._world_ranks = list(range(self.world_size))
+        self._dead_ep_ranks: set[int] = set()
+        self._peer_pids: list[int] = []
 
     def _make_all2all_kwargs(
         self,
@@ -1285,14 +1295,14 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         handle: deep_ep.ElasticBuffer = self.handle_cache.get_or_create(
             buffer_kwargs, deep_ep.ElasticBuffer
         )
-        if self.support_fault_tolerance and handle not in self._masked_buffers:
-            if not hasattr(handle, "set_rank_mask_enabled"):
-                raise RuntimeError(
-                    "Fault tolerance with deepep_v2 requires a DeepEP build with "
-                    "rank masking (ElasticBuffer.set_rank_mask_enabled)."
-                )
-            handle.set_rank_mask_enabled(True)
-            self._masked_buffers.append(handle)
+        if self.support_fault_tolerance and not any(
+            handle is h for h in self._ft_handles()
+        ):
+            if hasattr(handle, "set_rank_mask_enabled"):
+                handle.set_rank_mask_enabled(True)
+                self._masked_buffers.append(handle)
+            else:
+                self._watch(handle, buffer_kwargs, num_experts)
         if self._num_sms is None:
             self._num_sms = handle.get_theoretical_num_sms(
                 num_experts=num_experts,
@@ -1303,11 +1313,36 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
     def max_sms_used(self) -> int | None:
         return self._num_sms
 
+    def _ft_handles(self) -> list[Any]:
+        return self._masked_buffers + [h for h, _, _ in self._ghost_buffers]
+
+    def _watch(self, handle, buffer_kwargs: dict, num_experts: int) -> None:
+        from .deepep_v2_ghost import GhostBuffer, GhostWatchdog, same_host_pids
+
+        if self._ghost is None:
+            pids = same_host_pids(self.cpu_group)
+            if pids is None:
+                raise RuntimeError(
+                    "Fault tolerance with deepep_v2 across hosts requires a "
+                    "DeepEP build with rank masking."
+                )
+            self._peer_pids = pids
+            self._ghost = GhostWatchdog(self.world_size)
+            self._ghost.set_world(self._world_ranks, pids)
+        rank = self._world_ranks.index(self.rank)
+        self._ghost.ghosts.append(
+            GhostBuffer(handle, rank, len(self._world_ranks), num_experts)
+        )
+        self._ghost_buffers.append((handle, buffer_kwargs, num_experts))
+        self._ghost.start()
+
     def query_active_mask(self) -> torch.Tensor:
         # Fresh tensor: callers run both inside and outside inference mode
         mask = torch.zeros(self.world_size, device="cuda", dtype=torch.int32)
         for buf in self._masked_buffers:
             mask |= buf.get_rank_mask_tensor()
+        if self._ghost is not None:
+            mask |= self._ghost.mask
         return mask
 
     def query_fault(self) -> torch.Tensor:
@@ -1316,14 +1351,43 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
             self._last_mask = torch.zeros_like(current)
         return (current != self._last_mask).any()
 
+    def release_stuck_kernels(self, store, round_key: str, dead_ep_ranks) -> None:
+        """Ghost mode, before recovery syncs the device: kernels stuck on live
+        peers that left the step are released by playing those peers. Such
+        peers are behind in the barrier count."""
+        if self._ghost is None:
+            return
+        live = [r for r in self._world_ranks if r not in set(dead_ep_ranks)]
+        key = f"ft_deepep_v2_ghost_{round_key}"
+        counters = self._ghost.read_counters()
+        store.set(f"{key}_{self.rank}", ",".join(map(str, counters)))
+        behind = set()
+        for r in live:
+            peer = [int(v) for v in store.get(f"{key}_{r}").decode().split(",")]
+            if any(p < mine for p, mine in zip(peer, counters)):
+                behind.add(self._world_ranks.index(r))
+        if behind:
+            logger.info(
+                "[FT] DeepEP v2 ghost: releasing kernels waiting on EP ranks %s",
+                [self._world_ranks[i] for i in behind],
+            )
+        self._ghost.extra = behind
+
     def clean_buffers(self) -> None:
         for buf in self._masked_buffers:
             buf.clean_workspace()
+        if self._ghost is not None:
+            # Ghost-mode workspaces are reset in apply_dead_ranks
+            self._ghost.stop()
         self._last_mask = None
 
     def update_mask(self, rank: int, masked: bool = True) -> None:
         for buf in self._masked_buffers:
             buf.get_rank_mask_tensor()[rank] = int(masked)
+        if masked:
+            self._dead_ep_ranks.add(rank)
+        else:
+            self._dead_ep_ranks.discard(rank)
         torch.accelerator.synchronize()
         if self._last_mask is None:
             self._last_mask = torch.zeros(
@@ -1331,11 +1395,146 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
             )
         self._last_mask[rank] = int(masked)
 
+    def apply_dead_ranks(self, store, round_key: str) -> None:
+        """Ghost mode, after the dead set is replayed and every rank is idle:
+        rebuild the buffers over the survivors, or reset them for a retry."""
+        if self._ghost is None:
+            return
+        survivors = [r for r in range(self.world_size) if r not in self._dead_ep_ranks]
+        key = f"ft_deepep_v2_{round_key}"
+        if survivors != self._world_ranks:
+            self._rebuild(survivors, store, key)
+        else:
+            for ghost in self._ghost.ghosts:
+                ghost.workspace.zero_()
+            torch.accelerator.synchronize()
+            self._ghost.clear_missing()
+            # No rank may write into a peer's workspace before the peer reset it
+            _store_barrier(store, f"{key}_reset", len(survivors))
+        self._ghost.set_mask(sorted(self._dead_ep_ranks))
+        self._ghost.start()
+
+    def _rebuild(self, survivors: list[int], store, key: str) -> None:
+        import deep_ep  # type: ignore[import-not-found]
+
+        from vllm.model_executor.layers.fused_moe.prepare_finalize.deepep_v2 import (
+            DeepEPV2PrepareAndFinalize,
+        )
+
+        from .deepep_v2_ghost import GhostBuffer
+
+        start = time.perf_counter()
+        logger.info("[FT] Rebuilding DeepEP v2 buffers over EP ranks %s", survivors)
+        # Releasing stuck kernels may have played live peers through barriers
+        # they never ran; reset every workspace before the destroy barrier.
+        for ghost in self._ghost.ghosts:
+            ghost.workspace.zero_()
+        torch.accelerator.synchronize()
+        _store_barrier(store, f"{key}_zeroed", len(survivors))
+        # The old buffers' destroy barrier still waits for the dead ranks
+        num_missing = len(self._world_ranks) - len(survivors)
+        for ghost in self._ghost.ghosts:
+            ghost.add_arrivals(1, num_missing)
+            ghost.buffer.destroy()
+        destroyed = time.perf_counter()
+        rank = survivors.index(self.rank)
+        group = _stateless_device_group(store, key, rank, len(survivors))
+        grouped = time.perf_counter()
+        self.handle_cache = Cache()
+        self._world_ranks = survivors
+        self._ghost.set_world(survivors, [self._peer_pids[r] for r in survivors])
+        replaced: dict[int, tuple[Any, int]] = {}
+        entries = []
+        for handle, kwargs, num_experts in self._ghost_buffers:
+            new_kwargs = dict(kwargs, group=group)
+            new_handle = self.handle_cache.get_or_create(
+                new_kwargs, deep_ep.ElasticBuffer
+            )
+            epr = num_experts // self.world_size
+            self._ghost.ghosts.append(
+                GhostBuffer(new_handle, rank, len(survivors), epr * len(survivors))
+            )
+            replaced[id(handle)] = (new_handle, num_experts)
+            entries.append((new_handle, new_kwargs, num_experts))
+        self._ghost_buffers = entries
+        remaps: dict[int, tuple[torch.Tensor, int]] = {}
+        for pf in DeepEPV2PrepareAndFinalize.instances():
+            if id(pf.buffer) not in replaced:
+                continue
+            new_handle, num_experts = replaced[id(pf.buffer)]
+            if num_experts not in remaps:
+                remaps[num_experts] = _expert_remap(
+                    num_experts, self.world_size, survivors
+                )
+            pf.buffer = new_handle
+            pf.set_expert_remap(*remaps[num_experts])
+        end = time.perf_counter()
+        logger.info(
+            "[FT] Rebuilt DeepEP v2 buffers over EP ranks %s in %.2f s "
+            "(reset + destroy %.2f, NCCL group %.2f, buffers %.2f)",
+            survivors,
+            end - start,
+            destroyed - start,
+            grouped - destroyed,
+            end - grouped,
+        )
+
     def destroy(self):
+        if self._ghost is not None:
+            self._ghost.stop()
         with self.handle_cache._lock:
             for _, handle in self.handle_cache._cache.items():
                 handle.destroy()
             self.handle_cache._cache.clear()
+
+
+def _store_barrier(store, key: str, num_ranks: int, timeout: float = 300.0) -> None:
+    store.add(key, 1)
+    deadline = time.monotonic() + timeout
+    while int(store.add(key, 0)) < num_ranks:
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"Store barrier {key} timed out")
+        time.sleep(0.01)
+
+
+def _stateless_device_group(store, key: str, rank: int, size: int):
+    """NCCL group over the surviving EP ranks, rendezvoused through ``store``."""
+    from vllm.distributed.utils import (
+        allocate_group_ports,
+        fetch_group_ports,
+        stateless_init_torch_distributed_process_group,
+    )
+    from vllm.utils.network_utils import get_ip
+
+    if rank == 0:
+        store.set(f"{key}_host", get_ip())
+    host = store.get(f"{key}_host").decode()
+    if rank == 0:
+        ports, sockets = allocate_group_ports(store, key, host, 1)
+        port, listen_socket = ports[0], sockets[0]
+    else:
+        port, listen_socket = fetch_group_ports(store, key, 1)[0], None
+    group = stateless_init_torch_distributed_process_group(
+        host, port, rank, size, backend="nccl", listen_socket=listen_socket
+    )
+    assert not isinstance(group, tuple)
+    # ProcessGroupNCCL creates its communicator lazily, and DeepEP reuses it
+    group.allreduce([torch.zeros(1, device="cuda")]).wait()
+    torch.accelerator.synchronize()
+    return group
+
+
+def _expert_remap(
+    num_experts: int, world_size: int, survivors: list[int]
+) -> tuple[torch.Tensor, int]:
+    """Map physical expert IDs onto the survivors' contiguous blocks (-1: dead)."""
+    epr = num_experts // world_size
+    table = torch.full((num_experts,), -1, dtype=torch.int64)
+    for new_rank, rank in enumerate(survivors):
+        table[rank * epr : (rank + 1) * epr] = torch.arange(
+            new_rank * epr, (new_rank + 1) * epr
+        )
+    return table.cuda(), epr * len(survivors)
 
 
 class MoonEPAll2AllManager(All2AllManagerBase):
