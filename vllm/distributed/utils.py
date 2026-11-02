@@ -97,6 +97,31 @@ def _send_poison(
     del _poison_sends[:-64]
 
 
+def poison_cpu_all_reduce(group: ProcessGroup, like: torch.Tensor) -> None:
+    """Poison this rank's part of the next cpu_all_reduce_ on ``group``.
+
+    For a rank that faulted outside the collective: peers blocked on it there
+    fail at once instead of waiting out the gloo timeout. ``like`` has the
+    shape and integer dtype of the reduced tensor.
+    """
+    world_size = group.size()
+    if world_size == 1:
+        return
+    block_size = world_size & -world_size
+    rank = group.rank()
+    poison = torch.iinfo(like.dtype).min
+    _send_poison(group, like, poison, rank, 1, block_size, _CPU_ALL_REDUCE_TAG_BASE)
+    if world_size // block_size > 1:
+        tag = _CPU_ALL_REDUCE_TAG_BASE + block_size.bit_length() - 1
+        buf = torch.full_like(like, poison)
+        lane, my_block = rank % block_size, rank // block_size
+        for b in range(world_size // block_size):
+            if b != my_block:
+                with contextlib.suppress(Exception):
+                    work = group.send([buf], b * block_size + lane, tag)
+                    _poison_sends.append((buf, work))
+
+
 def cpu_all_reduce_(
     tensor: torch.Tensor,
     group: ProcessGroup,
@@ -161,14 +186,21 @@ def cpu_all_reduce_(
             tensor if b == my_block else torch.empty_like(tensor)
             for b in range(num_blocks)
         ]
-        works = []
+        recvs, sends = [], []
         for b, buf in enumerate(block_sums):
             if b != my_block:
-                works.append(group.recv([buf], b * block_size + lane, tag))
+                recvs.append(group.recv([buf], b * block_size + lane, tag))
         for b in range(num_blocks):
             if b != my_block:
-                works.append(group.send([tensor], b * block_size + lane, tag))
-        for work in works:
+                sends.append(group.send([tensor], b * block_size + lane, tag))
+        for work in recvs:
+            work.wait(timeout)
+        # A poisoned peer has left: it will not take our sends
+        if poison is not None and any(
+            int(buf.view(-1)[0]) == poison for buf in block_sums
+        ):
+            raise RuntimeError("CPU all-reduce peer failed")
+        for work in sends:
             work.wait(timeout)
         # Sum in block order so every rank computes the identical result.
         total = block_sums[0]

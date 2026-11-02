@@ -18,6 +18,7 @@ from vllm.distributed.utils import (
     create_tcp_store,
     enter_steady_state,
     init_gloo_process_group,
+    poison_cpu_all_reduce,
     set_gloo_backend_timeout,
 )
 from vllm.logger import init_logger
@@ -141,6 +142,11 @@ class EngineCoreSentinel:
     def on_fault(self, exc: Exception):
         """Called by the wrapper when the busy loop raises an exception."""
         self.resumed.clear()
+        dp_group = getattr(self.engine, "dp_group", None)
+        if dp_group is not None:
+            # Peers blocked on this engine in the DP state sync fail at once
+            # instead of waiting out the gloo timeout
+            poison_cpu_all_reduce(dp_group, torch.zeros(2, dtype=torch.int32))
         logger.warning(
             "[FT] Busy loop raised %s. Waiting for recovery.", type(exc).__name__
         )

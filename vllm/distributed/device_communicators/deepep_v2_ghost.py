@@ -309,6 +309,10 @@ class GhostWatchdog:
                         )
                     else:
                         self._check_silent(idx, ghost, counter, signals, stalled)
+            except torch.AcceleratorError:
+                # The CUDA context is broken; nothing left to release
+                logger.exception("[FT] DeepEP v2 ghost watchdog stopping")
+                break
             except Exception:
                 logger.exception("[FT] DeepEP v2 ghost watchdog error")
             # A forward pass has ~4 barriers per MoE layer to release
