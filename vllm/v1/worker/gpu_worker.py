@@ -988,7 +988,9 @@ class Worker(WorkerBase):
         # cuda graph capture.
         kernel_warmup(self)
 
-        if self.use_v2_model_runner:  # noqa: SIM102
+        # A deferred elastic EP commit holds every rank; serving and the
+        # deferred captures exercise these kernels right after it.
+        if self.use_v2_model_runner and not defer_cudagraph_capture:  # noqa: SIM102
             if self.vllm_config.kernel_config.enable_jit_warmup:
                 # A workspace resize after capture frees what the graphs point at.
                 warmup_kernels(

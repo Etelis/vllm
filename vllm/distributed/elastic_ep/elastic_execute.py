@@ -643,11 +643,14 @@ class ElasticEPScalingExecutor:
         else:
             mapping = self.receive_expert_mapping()
             self.worker.model_runner.setup_eplb_from_mapping(mapping)
+        # Eager DeepEP v2 dispatch is sized by the routed tokens, so joiners need
+        # their experts before the warmup sizes their workspace. CUDA graph mode
+        # allocates for the worst case and can reshuffle in the background.
         reshuffle_before_warmup = (
             self.worker.parallel_config.all2all_backend == "deepep_v2"
+            and self.worker.vllm_config.model_config.enforce_eager
         )
         if reshuffle_before_warmup:
-            # Expanded dispatch must route tokens to joiners to size their workspace.
             self._perform_eplb_reshuffle()
         if not self._can_reuse_fused_moe_kernel():
             # warm_and_capture's dummy run warms the deferred dp/ep groups.
