@@ -1640,9 +1640,9 @@ class DPAsyncMPClient(AsyncMPClient):
         return self.core_engine
 
     def _eep_commit_pause_mode(self) -> PauseMode:
-        from vllm.distributed.elastic_ep.elastic_execute import (
-            can_reuse_fused_moe_kernel,
-        )
+        # Importing elastic_execute here would block the event loop for about a
+        # second on the first resize.
+        from vllm.distributed.elastic_ep import can_reuse_fused_moe_kernel
 
         # MRV2 re-warms through the request pool, so running requests must
         # finish first while new ones stay queued in the scheduler.

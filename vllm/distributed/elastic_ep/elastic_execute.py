@@ -16,7 +16,7 @@ import vllm.envs as envs
 from vllm.compilation.breakable_cudagraph import BreakableCUDAGraphWrapper
 from vllm.compilation.cuda_graph import CUDAGraphWrapper
 from vllm.compilation.wrapper import reset_compile_wrapper
-from vllm.config import ParallelConfig, set_current_vllm_config
+from vllm.config import set_current_vllm_config
 from vllm.distributed import (
     get_dp_group,
     get_ep_group,
@@ -24,6 +24,7 @@ from vllm.distributed import (
     get_tp_group,
     get_world_group,
 )
+from vllm.distributed.elastic_ep import can_reuse_fused_moe_kernel
 from vllm.distributed.elastic_ep.standby_state import (
     create_standby_groups,
     get_standby_dp_group,
@@ -68,15 +69,6 @@ if TYPE_CHECKING:
     from vllm.model_executor.layers.fused_moe.fused_moe_method_base import (
         FusedMoEMethodBase,
     )
-
-
-def can_reuse_fused_moe_kernel(parallel_config: ParallelConfig) -> bool:
-    """Whether fused MoE kernels can be reused across EP rank changes.
-
-    The EP backend must preserve its CUDA graph entries when ranks are connected,
-    disconnected, masked, or unmasked.
-    """
-    return parallel_config.all2all_backend == "nixl_ep"
 
 
 def batch_transfer_weights(
