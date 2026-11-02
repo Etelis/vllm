@@ -448,6 +448,9 @@ class CudaGraphManager:
     def has_deferred_capture(self) -> bool:
         return len(self._deferred_descs) > 0
 
+    def has_captured_graphs(self) -> bool:
+        return len(self._captured_descs) > 0
+
     def pop_deferred_capture(self) -> BatchExecutionDescriptor:
         return self._deferred_descs.pop(0)
 

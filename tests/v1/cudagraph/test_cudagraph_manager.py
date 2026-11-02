@@ -649,7 +649,9 @@ def test_deferred_capture_pads_to_captured_graphs(monkeypatch):
         return desc.cg_mode, desc.num_tokens
 
     assert dispatch(2, 1) == (CUDAGraphMode.NONE, 2)
+    assert not manager.has_captured_graphs()
     assert capture_next() == (CUDAGraphMode.PIECEWISE, 24)
+    assert manager.has_captured_graphs()
     assert dispatch(2, 1) == (CUDAGraphMode.PIECEWISE, 24)
     assert capture_next() == (CUDAGraphMode.PIECEWISE, 16)
     assert capture_next() == (CUDAGraphMode.FULL, 8)

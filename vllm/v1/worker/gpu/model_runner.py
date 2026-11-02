@@ -195,7 +195,12 @@ from vllm.v1.worker.utils import (
     copy_kv_cache_blocks_inplace,
     get_uniform_decode_token_count,
 )
-from vllm.v1.worker.workspace import lock_workspace, use_workspace_lane
+from vllm.v1.worker.workspace import (
+    current_workspace_manager,
+    lock_workspace,
+    unlock_workspace,
+    use_workspace_lane,
+)
 
 logger = init_logger(__name__)
 
@@ -1144,6 +1149,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         desc = manager.pop_deferred_capture()
         # The previous step may still read the buffers the capture rewrites.
         torch.accelerator.synchronize()
+        # No graph holds workspace pointers yet, so the first capture may still
+        # allocate, e.g. stream-keyed resources on a joiner's new capture stream.
+        relock = (
+            not manager.has_captured_graphs()
+            and current_workspace_manager().is_locked()
+        )
+        if relock:
+            unlock_workspace()
         gc_was_enabled = gc.isenabled()
         gc.disable()
         # Other threads keep running CUDA work while serving, e.g. destroying
@@ -1182,6 +1195,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.kv_connector.reset_capture_state()
             torch.accelerator.synchronize()
         finally:
+            if relock:
+                lock_workspace()
             if gc_was_enabled:
                 gc.enable()
         if not manager.has_deferred_capture():
