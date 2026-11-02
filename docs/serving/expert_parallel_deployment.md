@@ -378,9 +378,14 @@ coordinates recovery across the engines.
 ### Configuring recovery
 
 Both retry and scale-down require `--enable-fault-tolerance`,
-`--enable-expert-parallel`, an FT-capable `--all2all-backend` (`nixl_ep` or
-`deepep_low_latency`), and the v2 model runner (`VLLM_USE_V2_MODEL_RUNNER=1`).
+`--enable-expert-parallel`, an FT-capable `--all2all-backend` (`nixl_ep`,
+`deepep_low_latency`, or `deepep_v2`), and the v2 model runner
+(`VLLM_USE_V2_MODEL_RUNNER=1`).
 Retry can recover from a fault when all workers remain alive.
+
+With `deepep_v2`, fault tolerance requires all EP ranks on one host and no
+micro-batching (DBO). Surviving ranks complete the failed ranks' part of each
+dispatch and combine, so expert buffers and CUDA graphs are kept.
 
 For scale-down recovery, also enable `--enable-eplb` and configure enough
 redundant expert slots with `--eplb-config.num_redundant_experts` to fit all
