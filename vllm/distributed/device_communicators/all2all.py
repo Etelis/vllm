@@ -1361,6 +1361,11 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         return mask
 
     def query_fault(self) -> torch.Tensor:
+        if self._ghost is not None and not self._masked_buffers:
+            # Called every step: doubles as the watchdog's heartbeat, and the
+            # flag is set with any mask bit, so no kernels are launched
+            self._ghost.heartbeat = time.monotonic()
+            return self._ghost.fault_flag
         current = self.query_active_mask()
         if self._last_mask is None:
             self._last_mask = torch.zeros_like(current)

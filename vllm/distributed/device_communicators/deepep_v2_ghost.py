@@ -33,6 +33,8 @@ logger = init_logger(__name__)
 _MAX_RANKS, _MAX_EXPERTS, _MAX_EXPERTS_PER_RANK = 1024, 2048, 256
 # Buffers per board row (shared barrier counters of all ranks)
 _MAX_GHOSTS = 16
+# A rank whose last step started longer ago than this may be stuck: poll it
+_POLL_AFTER_SECS = 1.0
 # int32 signal[phase] at (2 + phase) * 4; int64 counter at 0
 _OFF_SIGNALS = 8
 # int64 receive rank counts, then expert counts
@@ -209,6 +211,12 @@ class GhostWatchdog:
         # GPU polling of a healthy rank waits for steady state: a CUDA call from
         # this thread would invalidate a globally captured CUDA graph
         self.steady = False
+        # Refreshed every step by the fault query; a healthy rank that keeps
+        # stepping is never polled, so the watchdog stays off the GIL and GPU
+        self.heartbeat = time.monotonic()
+        # Set with any mask bit: the per-step fault query just returns it
+        self.fault_flag = torch.zeros((), dtype=torch.bool, device="cuda")
+        self._true_h = torch.ones((), dtype=torch.bool, pin_memory=True)
         self.ghosts: list[GhostBuffer] = []
         self.pids: list[int] = []
         # Original EP rank of each rank in the buffers' world
@@ -263,6 +271,7 @@ class GhostWatchdog:
         self._mask_h.zero_()
         self._mask_h[dead_ep_ranks] = 1
         self.mask.copy_(self._mask_h)
+        self.fault_flag.zero_()
         torch.accelerator.synchronize()
 
     def read_counters(self) -> list[int]:
@@ -291,12 +300,15 @@ class GhostWatchdog:
         while not self._stop.is_set():
             missing: set[int] = set()
             try:
-                if time.monotonic() - last_detect >= 0.02:
+                if time.monotonic() - last_detect >= 0.05:
                     self._detect()
                     last_detect = time.monotonic()
                 missing = self.dead | self.extra
+                pending = time.monotonic() - self.heartbeat > _POLL_AFTER_SECS
+                if not (missing or (self.steady and pending)):
+                    stalled.clear()
                 for idx, ghost in enumerate(
-                    self.ghosts if missing or self.steady else []
+                    self.ghosts if missing or (self.steady and pending) else []
                 ):
                     self._copy(self._counter_h, ghost.counter)
                     self._copy(self._signals_h, ghost.signals)
@@ -331,6 +343,7 @@ class GhostWatchdog:
         for i in newly:
             self._mask_h[self.ranks[i]] = 1
         self._copy(self.mask, self._mask_h)
+        self._copy(self.fault_flag, self._true_h)
         # A dead rank can have arrived at most at the barrier a survivor was
         # entering when it died; later barriers can be released at once.
         for idx, ghost in enumerate(self.ghosts):
@@ -364,6 +377,7 @@ class GhostWatchdog:
         for i in behind:
             self._mask_h[self.ranks[i]] = 1
         self._copy(self.mask, self._mask_h)
+        self._copy(self.fault_flag, self._true_h)
         self.extra |= set(behind)
         logger.warning(
             "[FT] DeepEP v2 ghost: EP ranks %s silent for %.0f s; playing their part",
