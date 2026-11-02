@@ -68,6 +68,14 @@ def _unpack_mxfp8_scale(
     return scale
 
 
+def _ghost_pre_op(buffer, is_dispatch: bool) -> None:
+    # Fault tolerance without DeepEP rank masking plays dead ranks before each
+    # op (vllm/distributed/device_communicators/deepep_v2_ghost.py)
+    ghost = getattr(buffer, "_vllm_ghost", None)
+    if ghost is not None:
+        ghost.pre_op(is_dispatch)
+
+
 # Live instances, so a fault-tolerance rebuild can swap in new buffers
 _INSTANCES: "weakref.WeakSet[DeepEPV2PrepareAndFinalize]" = weakref.WeakSet()
 
@@ -239,6 +247,7 @@ class DeepEPV2PrepareAndFinalize(mk.FusedMoEPrepareAndFinalizeModular):
                 -1,
             )
             dispatch_num_experts = self._dispatch_num_experts
+        _ghost_pre_op(self.buffer, is_dispatch=True)
 
         (
             recv_x,
@@ -514,6 +523,7 @@ class DeepEPV2PrepareAndFinalize(mk.FusedMoEPrepareAndFinalizeModular):
         # DBO drives its own hook/receiver schedule; keep the combine
         # synchronous there (the receiver then only performs the copy).
         combine_async = do_async and not dbo_enabled()
+        _ghost_pre_op(self.buffer, is_dispatch=False)
         combined_x, _, event = self.buffer.combine(
             x=fused_expert_output,
             handle=handle,

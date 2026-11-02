@@ -6,8 +6,11 @@ DeepEP v2 kernels wait on values that peers write into the local workspace,
 and trap once ``num_gpu_timeout_secs`` passes. When an EP peer dies, a watchdog
 writes the dead peer's part into the survivor's own workspace, so in-flight
 kernels complete instead of trapping: its arrival in each NVLink barrier, and
-"0 tokens" in its dispatch count slots. Recovery then rebuilds the buffers over
-the survivors. Single NVLink domain only: peers are watched by PID.
+"0 tokens" in its dispatch count slots. After recovery, a small kernel before
+each dispatch and combine keeps playing the dead ranks from a dead count held on
+the device, so CUDA graphs and JIT-compiled kernels stay valid; alternatively
+the buffers are rebuilt over the survivors. Single NVLink domain only: peers are
+watched by PID.
 
 Offsets follow deep_ep/include/deep_ep/common/layout.cuh at the DeepEP commit
 vLLM pins; a consistency check at registration rejects other layouts.
@@ -20,6 +23,8 @@ import time
 import torch
 
 from vllm.logger import init_logger
+from vllm.triton_utils import tl, triton
+from vllm.utils.math_utils import cdiv
 
 logger = init_logger(__name__)
 
@@ -57,6 +62,38 @@ def _workspace_base(buffer, rank: int, num_ranks: int) -> int:
     return tensor.data_ptr() - n * rank - _WORKSPACE_BYTES
 
 
+@triton.jit
+def _pre_op_kernel(
+    counter_ptr,
+    signals_ptr,
+    counts_ptr,
+    dead_slots_ptr,
+    num_dead_ptr,
+    num_slots,
+    IS_DISPATCH: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    # The op's NVLink barriers are counter and counter + 1: add the dead
+    # ranks' arrivals (+1 or -1 by barrier sign). Live peers may be adding
+    # theirs concurrently, hence atomics.
+    pid = tl.program_id(0)
+    num_dead = tl.load(num_dead_ptr)
+    if (pid == 0) & (num_dead > 0):
+        counter = tl.load(counter_ptr)
+        for k in tl.static_range(2):
+            barrier = counter + k
+            sign = ((barrier >> 1) & 1).to(tl.int32)
+            delta = num_dead * (1 - 2 * sign)
+            tl.atomic_add(signals_ptr + (barrier & 1), delta)
+    if IS_DISPATCH:
+        # "0 tokens" (encoded -1) in the dead ranks' rank and expert count slots
+        offs = pid * BLOCK + tl.arange(0, BLOCK)
+        mask = offs < num_slots
+        dead = tl.load(dead_slots_ptr + offs, mask=mask, other=0)
+        minus_one = tl.full([BLOCK], -1, tl.int64)
+        tl.store(counts_ptr + offs, minus_one, mask=mask & (dead != 0))
+
+
 def _alive(pid: int) -> bool:
     try:
         with open(f"/proc/{pid}/status") as f:
@@ -82,6 +119,15 @@ class GhostBuffer:
             torch.int64,
         )
         self.workspace = _device_view(base, _WORKSPACE_BYTES // 8, torch.int64)
+        # Dead ranks played before every op, kept on the device for CUDA graphs
+        self.num_dead = torch.zeros(1, dtype=torch.int32, device="cuda")
+        self.dead_slots = torch.zeros(
+            self.counts.numel(), dtype=torch.int8, device="cuda"
+        )
+        self.active = False
+        # Compile both variants now (no-ops while nothing is dead)
+        self._launch(True)
+        self._launch(False)
         torch.accelerator.synchronize()
         counter, signals = int(self.counter.item()), self.signals.tolist()
         last = counter - 1
@@ -91,6 +137,37 @@ class GhostBuffer:
                 "Unexpected DeepEP v2 workspace layout "
                 f"(counter={counter}, signals={signals})"
             )
+
+    def cover(self, dead_ranks: list[int]) -> None:
+        """Play ``dead_ranks`` (buffer-world ranks) before every later op."""
+        slots = torch.zeros(self.counts.numel(), dtype=torch.int8)
+        for rank in dead_ranks:
+            slots[rank] = 1
+            lo = self.num_ranks + self.experts_per_rank * rank
+            slots[lo : lo + self.experts_per_rank] = 1
+        self.dead_slots.copy_(slots)
+        self.num_dead.fill_(len(dead_ranks))
+        self.active = bool(dead_ranks)
+
+    def pre_op(self, is_dispatch: bool) -> None:
+        """Run on the compute stream right before each dispatch and combine."""
+        # Graphs captured while healthy keep the no-op launch for later faults
+        if self.active or torch.cuda.is_current_stream_capturing():
+            self._launch(is_dispatch)
+
+    def _launch(self, is_dispatch: bool) -> None:
+        block = 1024
+        grid = (cdiv(self.counts.numel(), block) if is_dispatch else 1,)
+        _pre_op_kernel[grid](
+            self.counter,
+            self.signals,
+            self.counts,
+            self.dead_slots,
+            self.num_dead,
+            self.counts.numel(),
+            IS_DISPATCH=is_dispatch,
+            BLOCK=block,
+        )
 
     def add_arrivals(self, num_barriers: int, num_missing: int) -> None:
         """Pre-add missing arrivals for the next barriers (current stream)."""
@@ -117,6 +194,8 @@ class GhostWatchdog:
         # Buffer-world ranks to play: dead peers, plus peers that left a step
         self.dead: set[int] = set()
         self.extra: set[int] = set()
+        # Dead ranks already played by the pre-op kernels
+        self.covered: set[int] = set()
         # Per buffer: first barrier released without waiting for a stall
         self._safe_from: dict[int, int] = {}
         self.mask = torch.zeros(world_size, dtype=torch.int32, device="cuda")
@@ -137,7 +216,7 @@ class GhostWatchdog:
 
     def set_world(self, ranks: list[int], pids: list[int]) -> None:
         self.ranks, self.pids = ranks, pids
-        self.ghosts = []
+        self.ghosts, self.covered = [], set()
         self.clear_missing()
 
     def start(self) -> None:
@@ -209,7 +288,7 @@ class GhostWatchdog:
         newly = [
             i
             for i, pid in enumerate(self.pids)
-            if i not in self.dead and not _alive(pid)
+            if i not in self.dead and i not in self.covered and not _alive(pid)
         ]
         if not newly:
             return

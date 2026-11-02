@@ -1320,6 +1320,11 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         from .deepep_v2_ghost import GhostBuffer, GhostWatchdog, same_host_pids
 
         if self._ghost is None:
+            if get_current_vllm_config().parallel_config.use_ubatching:
+                raise RuntimeError(
+                    "Fault tolerance with deepep_v2 without rank masking does "
+                    "not support micro-batching (DBO)."
+                )
             pids = same_host_pids(self.cpu_group)
             if pids is None:
                 raise RuntimeError(
@@ -1330,9 +1335,10 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
             self._ghost = GhostWatchdog(self.world_size)
             self._ghost.set_world(self._world_ranks, pids)
         rank = self._world_ranks.index(self.rank)
-        self._ghost.ghosts.append(
-            GhostBuffer(handle, rank, len(self._world_ranks), num_experts)
-        )
+        ghost = GhostBuffer(handle, rank, len(self._world_ranks), num_experts)
+        self._ghost.ghosts.append(ghost)
+        # Found by the prepare/finalize hooks before each dispatch and combine
+        handle._vllm_ghost = ghost
         self._ghost_buffers.append((handle, buffer_kwargs, num_experts))
         self._ghost.start()
 
@@ -1402,17 +1408,36 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
             return
         survivors = [r for r in range(self.world_size) if r not in self._dead_ep_ranks]
         key = f"ft_deepep_v2_{round_key}"
-        if survivors != self._world_ranks:
+        if survivors != self._world_ranks and self._rebuild_on_scale_down():
             self._rebuild(survivors, store, key)
         else:
+            # Keep the buffers (and CUDA graphs): reset them, then play the
+            # dead ranks before every op
             for ghost in self._ghost.ghosts:
                 ghost.workspace.zero_()
+            dead = [
+                i for i, r in enumerate(self._world_ranks) if r in self._dead_ep_ranks
+            ]
+            for ghost in self._ghost.ghosts:
+                ghost.cover(dead)
             torch.accelerator.synchronize()
             self._ghost.clear_missing()
+            self._ghost.covered = set(dead)
             # No rank may write into a peer's workspace before the peer reset it
             _store_barrier(store, f"{key}_reset", len(survivors))
         self._ghost.set_mask(sorted(self._dead_ep_ranks))
         self._ghost.start()
+
+    def _rebuild_on_scale_down(self) -> bool:
+        if not envs.VLLM_DEEPEP_V2_FT_REBUILD:
+            return False
+        if not get_current_vllm_config().model_config.enforce_eager:
+            logger.warning_once(
+                "[FT] VLLM_DEEPEP_V2_FT_REBUILD needs eager mode: rebuilt "
+                "buffers would leave captured CUDA graphs stale."
+            )
+            return False
+        return True
 
     def _rebuild(self, survivors: list[int], store, key: str) -> None:
         import deep_ep  # type: ignore[import-not-found]
@@ -1451,9 +1476,9 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
                 new_kwargs, deep_ep.ElasticBuffer
             )
             epr = num_experts // self.world_size
-            self._ghost.ghosts.append(
-                GhostBuffer(new_handle, rank, len(survivors), epr * len(survivors))
-            )
+            ghost = GhostBuffer(new_handle, rank, len(survivors), epr * len(survivors))
+            self._ghost.ghosts.append(ghost)
+            new_handle._vllm_ghost = ghost
             replaced[id(handle)] = (new_handle, num_experts)
             entries.append((new_handle, new_kwargs, num_experts))
         self._ghost_buffers = entries
