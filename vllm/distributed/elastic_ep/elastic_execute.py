@@ -260,9 +260,10 @@ class ElasticEPScalingExecutor:
     ) -> None:
         """Free retired DeepEP v2 buffers without DeepEP's GPU barrier.
 
-        That barrier would order the teardown with the forward stream. Draining
-        this GPU and then meeting every old peer on the CPU also guarantees that
-        no peer still accesses the buffers.
+        That barrier would order the teardown with the forward stream. Every old
+        rank synchronized its device when it released its graphs before the
+        switch, so meeting the old peers on the CPU guarantees that no peer
+        still accesses the buffers.
         """
         if not self._destroys_all2all_off_stream():
             return
@@ -278,10 +279,6 @@ class ElasticEPScalingExecutor:
             if isinstance(manager, DeepEPV2All2AllManager):
                 group.device_communicator.all2all_manager = None
                 retired.append((group, manager))
-        if not retired:
-            return
-        current_platform.set_device(self.worker.device)
-        torch.accelerator.synchronize()
         for group, manager in retired:
             group.barrier()
             manager.destroy(with_barrier=False)
@@ -681,7 +678,6 @@ class ElasticEPScalingExecutor:
             )
 
     def commit_scale_up(self, is_existing_worker: bool) -> None:
-        retired_groups: tuple[GroupCoordinator | None, ...] | None = None
         if is_existing_worker:
             self.broadcast_expert_mapping()
             retired_groups = self.switch_and_prepare()
@@ -700,16 +696,13 @@ class ElasticEPScalingExecutor:
         if not self._can_reuse_fused_moe_kernel():
             # warm_and_capture's dummy run warms the deferred dp/ep groups.
             # Joining workers have captured nothing, so there is nothing to release.
-            self.warm_and_capture(
-                graphs_released=True,
-                retired_groups=retired_groups,
-            )
+            self.warm_and_capture(graphs_released=True)
         elif current_platform.is_rocm():
             # Reuse path skips warm_and_capture; warm the deferred groups here.
             self._warm_target_groups(get_dp_group(), get_ep_group())
         if not reshuffle_before_warmup:
             self._perform_eplb_reshuffle(async_op=True)
-        if retired_groups is not None:
+        if is_existing_worker:
             self._start_group_cleanup(retired_groups)
 
     def commit_scale_down(self, new_dp_size: int, removing: bool) -> None:
@@ -720,11 +713,7 @@ class ElasticEPScalingExecutor:
             retired_groups = self.switch_and_prepare()
             if not self._can_reuse_fused_moe_kernel():
                 # Every survivor ran the JIT warmup at startup or when it joined.
-                self.warm_and_capture(
-                    graphs_released=True,
-                    skip_jit_warmup=True,
-                    retired_groups=retired_groups,
-                )
+                self.warm_and_capture(graphs_released=True, skip_jit_warmup=True)
             elif current_platform.is_rocm():
                 # Reuse path skips warm_and_capture; warm the deferred groups here.
                 self._warm_target_groups(get_dp_group(), get_ep_group())
@@ -811,11 +800,7 @@ class ElasticEPScalingExecutor:
             freeze_gc_heap()
 
     def warm_and_capture(
-        self,
-        *,
-        graphs_released: bool = False,
-        skip_jit_warmup: bool = False,
-        retired_groups: tuple[GroupCoordinator | None, ...] | None = None,
+        self, *, graphs_released: bool = False, skip_jit_warmup: bool = False
     ) -> None:
         # _ensure_workspace_size allocates a fresh tensor on grow, leaving
         # any captured CUDA graph with a stale data pointer; drop graphs
@@ -840,12 +825,6 @@ class ElasticEPScalingExecutor:
             if self.worker.use_v2_model_runner
             else runner.preserve_serving_state()
         )
-        # Free the retired buffers while the dummy run below captures nothing.
-        all2all_cleanup = (
-            self._async_executor.submit(self._destroy_retired_all2all, retired_groups)
-            if defer_capture and retired_groups is not None
-            else None
-        )
         with (
             skip_dp_coordination() if reuse_kernel else nullcontext(),
             all2all_manager.mask_remote_ranks() if reuse_kernel else nullcontext(),
@@ -859,10 +838,6 @@ class ElasticEPScalingExecutor:
                 skip_eplb=True,
                 randomize_inputs=self.worker.randomize_dummy_inputs,
             )
-            # The cleanup synchronizes the device, which would invalidate CUDA
-            # graphs that kernel autotuning may capture in the warmup.
-            if all2all_cleanup is not None:
-                all2all_cleanup.result()
             self.worker.compile_or_warm_up_model(
                 defer_cudagraph_capture=defer_capture,
                 skip_jit_warmup=defer_capture and skip_jit_warmup,
