@@ -1211,6 +1211,13 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         self.handle_cache = Cache()
         self._num_sms: int | None = None
         self._gin_checked = False
+        self.support_fault_tolerance = (
+            get_current_vllm_config().parallel_config.enable_fault_tolerance
+        )
+        # Masked buffers, kept alive for the fault-tolerance queries
+        self._masked_buffers: list[Any] = []
+        self._mask: torch.Tensor | None = None
+        self._last_mask: torch.Tensor | None = None
 
     def _make_all2all_kwargs(
         self,
@@ -1219,7 +1226,13 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         num_topk: int,
         use_fp8_dispatch: bool,
     ) -> dict:
+        ft_kwargs = (
+            dict(num_gpu_timeout_secs=envs.VLLM_DEEPEP_V2_GPU_TIMEOUT_SECS)
+            if self.support_fault_tolerance
+            else {}
+        )
         return dict(
+            **ft_kwargs,
             group=self._device_group
             if self._device_group is not None
             else self.cpu_group,
@@ -1273,6 +1286,14 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         handle: deep_ep.ElasticBuffer = self.handle_cache.get_or_create(
             buffer_kwargs, deep_ep.ElasticBuffer
         )
+        if self.support_fault_tolerance and handle not in self._masked_buffers:
+            if not hasattr(handle, "set_rank_mask_enabled"):
+                raise RuntimeError(
+                    "Fault tolerance with deepep_v2 requires a DeepEP build with "
+                    "rank masking (ElasticBuffer.set_rank_mask_enabled)."
+                )
+            handle.set_rank_mask_enabled(True)
+            self._masked_buffers.append(handle)
         if self._num_sms is None:
             self._num_sms = handle.get_theoretical_num_sms(
                 num_experts=num_experts,
@@ -1282,6 +1303,35 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
 
     def max_sms_used(self) -> int | None:
         return self._num_sms
+
+    def query_active_mask(self) -> torch.Tensor:
+        if self._mask is None:
+            self._mask = torch.zeros(self.world_size, device="cuda", dtype=torch.int32)
+        self._mask.zero_()
+        for buf in self._masked_buffers:
+            self._mask |= buf.get_rank_mask_tensor()
+        return self._mask
+
+    def query_fault(self) -> torch.Tensor:
+        current = self.query_active_mask()
+        if self._last_mask is None:
+            self._last_mask = torch.zeros_like(current)
+        return (current != self._last_mask).any()
+
+    def clean_buffers(self) -> None:
+        for buf in self._masked_buffers:
+            buf.clean_workspace()
+        self._last_mask = None
+
+    def update_mask(self, rank: int, masked: bool = True) -> None:
+        for buf in self._masked_buffers:
+            buf.get_rank_mask_tensor()[rank] = int(masked)
+        torch.accelerator.synchronize()
+        if self._last_mask is None:
+            self._last_mask = torch.zeros(
+                self.world_size, device="cuda", dtype=torch.int32
+            )
+        self._last_mask[rank] = int(masked)
 
     def destroy(self):
         with self.handle_cache._lock:

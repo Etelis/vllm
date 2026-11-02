@@ -18,10 +18,13 @@ import pytest
 import requests
 
 from tests.utils import RemoteOpenAIServer, multi_gpu_test
-from vllm.utils.import_utils import has_nixl_ep
+from vllm.utils.import_utils import has_deep_ep_v2, has_nixl_ep
 from vllm.utils.network_utils import get_open_port
 
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen3-30B-A3B")
+# nixl_ep, or deepep_v2 (needs a DeepEP build with rank masking)
+ALL2ALL_BACKEND = os.getenv("ALL2ALL_BACKEND", "nixl_ep")
+HAS_FT_BACKEND = has_deep_ep_v2() if ALL2ALL_BACKEND == "deepep_v2" else has_nixl_ep()
 
 # Fault-detection timeout budget:
 # - CPU: Gloo DP allreduce timeout (30s) detects the dead peer.
@@ -137,7 +140,7 @@ def _ft_server_args(extra_args: list[str] | None = None) -> list[str]:
         "128",
         "--enable-expert-parallel",
         "--all2all-backend",
-        "nixl_ep",
+        ALL2ALL_BACKEND,
         "--enable-fault-tolerance",
         "--cpu-distributed-timeout-seconds",
         str(CPU_DISTRIBUTED_TIMEOUT_S),
@@ -374,7 +377,7 @@ def _drive_to_faulted(
     return faulted
 
 
-@pytest.mark.skipif(not has_nixl_ep(), reason="Requires nixl_ep all2all backend")
+@pytest.mark.skipif(not HAS_FT_BACKEND, reason=f"Requires {ALL2ALL_BACKEND}")
 @multi_gpu_test(num_gpus=2)
 def test_injected_fault_retry_recovers_all_ranks(monkeypatch, tmp_path):
     """An exception injected into the inference path drives full retry recovery.
@@ -431,7 +434,7 @@ def test_injected_fault_retry_recovers_all_ranks(monkeypatch, tmp_path):
         )
 
 
-@pytest.mark.skipif(not has_nixl_ep(), reason="Requires nixl_ep all2all backend")
+@pytest.mark.skipif(not HAS_FT_BACKEND, reason=f"Requires {ALL2ALL_BACKEND}")
 @multi_gpu_test(num_gpus=4)
 @pytest.mark.parametrize("quantization", [None, "fp8_per_block"])
 def test_scale_down_removes_dead_rank_and_recovers(quantization):

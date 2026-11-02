@@ -303,6 +303,7 @@ if TYPE_CHECKING:
     VLLM_DEEPEP_V2_ALLOW_HYBRID_MODE: bool = True
     VLLM_DEEPEP_V2_PREFER_OVERLAP: bool = False
     VLLM_DEEPEP_V2_ALLOW_MULTIPLE_REDUCTION: bool = False
+    VLLM_DEEPEP_V2_GPU_TIMEOUT_SECS: int = 100
     VLLM_DBO_COMM_SMS: int = 20
     VLLM_PATTERN_MATCH_DEBUG: str | None = None
     VLLM_DEBUG_DUMP_PATH: str | None = None
@@ -2132,6 +2133,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # DeepEP v2: trade precision for transfer size in combine
     "VLLM_DEEPEP_V2_ALLOW_MULTIPLE_REDUCTION": lambda: bool(
         int(os.getenv("VLLM_DEEPEP_V2_ALLOW_MULTIPLE_REDUCTION", "0"))
+    ),
+    # DeepEP v2 with fault tolerance: seconds a kernel waits for a peer before
+    # masking it
+    "VLLM_DEEPEP_V2_GPU_TIMEOUT_SECS": lambda: int(
+        os.getenv("VLLM_DEEPEP_V2_GPU_TIMEOUT_SECS", "100")
     ),
     # The number of SMs/CUs to allocate for communication kernels when
     # running DBO; the rest will be allocated to compute.
