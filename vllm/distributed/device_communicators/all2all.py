@@ -1352,6 +1352,10 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
             self._ghost.steady = True
 
     def query_active_mask(self) -> torch.Tensor:
+        if self._ghost is not None and not self._masked_buffers:
+            # Host copy: reading the device mask could wait, holding the GIL,
+            # on a kernel stuck on a dead peer that only the watchdog releases
+            return self._ghost.host_mask()
         # Fresh tensor: callers run both inside and outside inference mode
         mask = torch.zeros(self.world_size, device="cuda", dtype=torch.int32)
         for buf in self._masked_buffers:

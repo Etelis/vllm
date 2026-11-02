@@ -274,6 +274,10 @@ class GhostWatchdog:
         self.fault_flag.zero_()
         torch.accelerator.synchronize()
 
+    def host_mask(self) -> torch.Tensor:
+        """Mask in original EP numbering, from host memory (never waits on the GPU)."""
+        return self._mask_h.clone()
+
     def read_counters(self) -> list[int]:
         values = []
         for ghost in self.ghosts:
@@ -300,7 +304,7 @@ class GhostWatchdog:
         while not self._stop.is_set():
             missing: set[int] = set()
             try:
-                if time.monotonic() - last_detect >= 0.05:
+                if time.monotonic() - last_detect >= 0.02:
                     self._detect()
                     last_detect = time.monotonic()
                 missing = self.dead | self.extra
