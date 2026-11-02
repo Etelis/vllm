@@ -19,7 +19,9 @@ vLLM pins; a consistency check at registration rejects other layouts.
 import os
 import threading
 import time
+import uuid
 
+import numpy as np
 import torch
 
 from vllm.logger import init_logger
@@ -29,6 +31,8 @@ from vllm.utils.math_utils import cdiv
 logger = init_logger(__name__)
 
 _MAX_RANKS, _MAX_EXPERTS, _MAX_EXPERTS_PER_RANK = 1024, 2048, 256
+# Buffers per board row (shared barrier counters of all ranks)
+_MAX_GHOSTS = 16
 # int32 signal[phase] at (2 + phase) * 4; int64 counter at 0
 _OFF_SIGNALS = 8
 # int64 receive rank counts, then expert counts
@@ -185,8 +189,23 @@ class GhostWatchdog:
     launches can all wait behind the stuck kernel.
     """
 
-    def __init__(self, world_size: int, stable_secs: float = 0.2):
+    def __init__(
+        self,
+        world_size: int,
+        rank: int,
+        board_path: str,
+        silent_secs: float,
+        stable_secs: float = 0.2,
+    ):
         self.stable_secs = stable_secs
+        # A kernel stalled this long on live peers behind in the barrier count
+        # plays them and flags a fault (like a rank mask's timeout)
+        self.silent_secs = silent_secs
+        # Every rank's barrier counters, by original EP rank and buffer
+        self._rank = rank
+        self._board = np.memmap(
+            board_path, dtype=np.int64, mode="r+", shape=(world_size, _MAX_GHOSTS)
+        )
         self.ghosts: list[GhostBuffer] = []
         self.pids: list[int] = []
         # Original EP rank of each rank in the buffers' world
@@ -273,10 +292,18 @@ class GhostWatchdog:
                     self._detect()
                     last_detect = time.monotonic()
                 missing = self.dead | self.extra
-                for idx, ghost in enumerate(self.ghosts if missing else []):
-                    released += self._release(
-                        idx, ghost, len(missing), stalled, ghosted
-                    )
+                for idx, ghost in enumerate(self.ghosts):
+                    self._copy(self._counter_h, ghost.counter)
+                    self._copy(self._signals_h, ghost.signals)
+                    counter = int(self._counter_h[0])
+                    signals = self._signals_h.tolist()
+                    self._board[self._rank, idx] = counter
+                    if missing:
+                        released += self._release(
+                            idx, ghost, counter, signals, len(missing), stalled, ghosted
+                        )
+                    else:
+                        self._check_silent(idx, ghost, counter, signals, stalled)
             except Exception:
                 logger.exception("[FT] DeepEP v2 ghost watchdog error")
             # A forward pass has ~4 barriers per MoE layer to release
@@ -306,10 +333,38 @@ class GhostWatchdog:
             [self.ranks[i] for i in newly],
         )
 
-    def _release(self, idx, ghost, num_missing, stalled, ghosted) -> int:
-        self._copy(self._counter_h, ghost.counter)
-        self._copy(self._signals_h, ghost.signals)
-        counter, signals = int(self._counter_h[0]), self._signals_h.tolist()
+    def _check_silent(self, idx, ghost, counter, signals, stalled) -> None:
+        state, now = (counter, tuple(signals)), time.monotonic()
+        if idx not in stalled or stalled[idx][0] != state:
+            stalled[idx] = (state, now)
+            return
+        if now - stalled[idx][1] < self.silent_secs:
+            return
+        barrier = counter - 1
+        phase, sign = barrier & 1, (barrier >> 1) & 1
+        short = ghost.num_ranks - signals[phase] if sign == 0 else signals[phase]
+        behind = [
+            i
+            for i, r in enumerate(self.ranks)
+            if r != self._rank
+            and i not in self.covered
+            and self._board[r, idx] < counter
+        ]
+        if short == 0 or not behind:
+            return
+        for i in behind:
+            self._mask_h[self.ranks[i]] = 1
+        self._copy(self.mask, self._mask_h)
+        self.extra |= set(behind)
+        logger.warning(
+            "[FT] DeepEP v2 ghost: EP ranks %s silent for %.0f s; playing their part",
+            [self.ranks[i] for i in behind],
+            now - stalled[idx][1],
+        )
+
+    def _release(
+        self, idx, ghost, counter, signals, num_missing, stalled, ghosted
+    ) -> int:
         barrier = counter - 1
         if self.dead and barrier < self._safe_from.get(idx, 0):
             # The dead rank may have arrived here before dying. Once the kernel
@@ -344,14 +399,21 @@ class GhostWatchdog:
         return 0
 
 
-def same_host_pids(cpu_group) -> list[int] | None:
-    """PIDs of all ranks in ``cpu_group``, or None if they span hosts."""
+def same_host_peers(cpu_group) -> tuple[list[int], str] | None:
+    """PIDs of all ranks in ``cpu_group`` and a shared counter board in
+    /dev/shm, or None if the ranks span hosts."""
     import socket
 
     import torch.distributed as dist
 
+    board = ""
+    if cpu_group.rank() == 0:
+        board = f"/dev/shm/vllm-deepep-v2-ghost-{uuid.uuid4().hex}"
+        with open(board, "wb") as f:
+            f.truncate(cpu_group.size() * _MAX_GHOSTS * 8)
     entries: list = [None] * cpu_group.size()
-    dist.all_gather_object(entries, (socket.gethostname(), os.getpid()), cpu_group)
-    if len({host for host, _ in entries}) != 1:
+    host = socket.gethostname()
+    dist.all_gather_object(entries, (host, os.getpid(), board), cpu_group)
+    if len({h for h, _, _ in entries}) != 1:
         return None
-    return [pid for _, pid in entries]
+    return [pid for _, pid, _ in entries], entries[0][2]

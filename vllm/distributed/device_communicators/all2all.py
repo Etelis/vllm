@@ -1317,7 +1317,7 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         return self._masked_buffers + [h for h, _, _ in self._ghost_buffers]
 
     def _watch(self, handle, buffer_kwargs: dict, num_experts: int) -> None:
-        from .deepep_v2_ghost import GhostBuffer, GhostWatchdog, same_host_pids
+        from .deepep_v2_ghost import GhostBuffer, GhostWatchdog, same_host_peers
 
         if self._ghost is None:
             if get_current_vllm_config().parallel_config.use_ubatching:
@@ -1325,15 +1325,20 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
                     "Fault tolerance with deepep_v2 without rank masking does "
                     "not support micro-batching (DBO)."
                 )
-            pids = same_host_pids(self.cpu_group)
-            if pids is None:
+            peers = same_host_peers(self.cpu_group)
+            if peers is None:
                 raise RuntimeError(
                     "Fault tolerance with deepep_v2 across hosts requires a "
                     "DeepEP build with rank masking."
                 )
-            self._peer_pids = pids
-            self._ghost = GhostWatchdog(self.world_size)
-            self._ghost.set_world(self._world_ranks, pids)
+            self._peer_pids, board = peers
+            self._ghost = GhostWatchdog(
+                self.world_size,
+                self.rank,
+                board,
+                envs.VLLM_DEEPEP_V2_FT_SILENT_SECS,
+            )
+            self._ghost.set_world(self._world_ranks, self._peer_pids)
         rank = self._world_ranks.index(self.rank)
         ghost = GhostBuffer(handle, rank, len(self._world_ranks), num_experts)
         self._ghost.ghosts.append(ghost)

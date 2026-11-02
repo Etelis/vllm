@@ -305,6 +305,7 @@ if TYPE_CHECKING:
     VLLM_DEEPEP_V2_ALLOW_MULTIPLE_REDUCTION: bool = False
     VLLM_DEEPEP_V2_GPU_TIMEOUT_SECS: int = 100
     VLLM_DEEPEP_V2_FT_REBUILD: bool = False
+    VLLM_DEEPEP_V2_FT_SILENT_SECS: float = 30.0
     VLLM_DBO_COMM_SMS: int = 20
     VLLM_PATTERN_MATCH_DEBUG: str | None = None
     VLLM_DEBUG_DUMP_PATH: str | None = None
@@ -2145,6 +2146,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # op (eager mode only; rebuilt buffers recompile their kernels)
     "VLLM_DEEPEP_V2_FT_REBUILD": lambda: bool(
         int(os.getenv("VLLM_DEEPEP_V2_FT_REBUILD", "0"))
+    ),
+    # DeepEP v2 fault tolerance without rank masking: seconds a kernel may wait
+    # on live peers that are behind before they are played and flagged as faulty
+    "VLLM_DEEPEP_V2_FT_SILENT_SECS": lambda: float(
+        os.getenv("VLLM_DEEPEP_V2_FT_SILENT_SECS", "30")
     ),
     # The number of SMs/CUs to allocate for communication kernels when
     # running DBO; the rest will be allocated to compute.

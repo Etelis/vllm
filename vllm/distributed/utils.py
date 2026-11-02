@@ -5,6 +5,7 @@
 # Adapted from
 # https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/tensor_parallel/utils.py
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
+import contextlib
 import dataclasses
 import functools
 import os
@@ -72,6 +73,30 @@ def all_reduce_int(
     return int(tensor.item())
 
 
+# Poison buffers of failed all-reduces, kept alive until delivered
+_poison_sends: list[tuple[torch.Tensor, Any]] = []
+
+
+def _send_poison(
+    group: ProcessGroup,
+    tensor: torch.Tensor,
+    poison: int,
+    rank: int,
+    mask: int,
+    block_size: int,
+    tag: int,
+) -> None:
+    """After a failed round, send the peers of this rank's remaining rounds a
+    poison tensor, so they fail at once instead of timing out on this rank."""
+    buf = torch.full_like(tensor, poison)
+    while mask < block_size:
+        with contextlib.suppress(Exception):
+            _poison_sends.append((buf, group.send([buf], rank ^ mask, tag)))
+        mask <<= 1
+        tag += 1
+    del _poison_sends[:-64]
+
+
 def cpu_all_reduce_(
     tensor: torch.Tensor,
     group: ProcessGroup,
@@ -98,6 +123,9 @@ def cpu_all_reduce_(
 
     rank = group.rank()
     tag = _CPU_ALL_REDUCE_TAG_BASE
+    # Sent on failure so peers waiting on this rank fail fast (integer tensors,
+    # whose minimum value is never a real sum here)
+    poison = None if tensor.dtype.is_floating_point else torch.iinfo(tensor.dtype).min
 
     # Recursive doubling within the block (peers stay in the aligned block).
     if block_size > 1:
@@ -107,10 +135,20 @@ def cpu_all_reduce_(
         while mask < block_size:
             peer = rank ^ mask
             # Wait for both ops before touching either buffer.
-            recv_work = group.recv([scratch], peer, tag)
-            send_work = group.send([tensor], peer, tag)
-            recv_work.wait(timeout)
-            send_work.wait(timeout)
+            try:
+                recv_work = group.recv([scratch], peer, tag)
+                send_work = group.send([tensor], peer, tag)
+                recv_work.wait(timeout)
+                # A poisoned peer has left: it will not take our send
+                if poison is not None and int(scratch.view(-1)[0]) == poison:
+                    raise RuntimeError(f"CPU all-reduce peer {peer} failed")
+                send_work.wait(timeout)
+            except Exception:
+                if poison is not None:
+                    _send_poison(
+                        group, tensor, poison, rank, mask << 1, block_size, tag + 1
+                    )
+                raise
             tensor.add_(scratch)
             mask <<= 1
             tag += 1
