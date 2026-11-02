@@ -1125,10 +1125,22 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
     def max_sms_used(self) -> int | None:
         return self._num_sms
 
-    def destroy(self):
+    @staticmethod
+    def supports_destroy_without_barrier() -> bool:
+        import inspect
+
+        import deep_ep  # type: ignore[import-not-found]
+
+        destroy = deep_ep.ElasticBuffer.destroy
+        return "with_barrier" in inspect.signature(destroy).parameters
+
+    def destroy(self, with_barrier: bool = True):
         with self.handle_cache._lock:
             for handle in self._buffers:
-                handle.destroy()
+                if with_barrier:
+                    handle.destroy()
+                else:
+                    handle.destroy(with_barrier=False)
             self._buffers.clear()
             self.handle_cache._cache.clear()
 
