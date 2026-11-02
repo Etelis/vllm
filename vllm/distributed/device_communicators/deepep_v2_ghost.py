@@ -206,6 +206,9 @@ class GhostWatchdog:
         self._board = np.memmap(
             board_path, dtype=np.int64, mode="r+", shape=(world_size, _MAX_GHOSTS)
         )
+        # GPU polling of a healthy rank waits for steady state: a CUDA call from
+        # this thread would invalidate a globally captured CUDA graph
+        self.steady = False
         self.ghosts: list[GhostBuffer] = []
         self.pids: list[int] = []
         # Original EP rank of each rank in the buffers' world
@@ -292,7 +295,9 @@ class GhostWatchdog:
                     self._detect()
                     last_detect = time.monotonic()
                 missing = self.dead | self.extra
-                for idx, ghost in enumerate(self.ghosts):
+                for idx, ghost in enumerate(
+                    self.ghosts if missing or self.steady else []
+                ):
                     self._copy(self._counter_h, ghost.counter)
                     self._copy(self._signals_h, ghost.signals)
                     counter = int(self._counter_h[0])

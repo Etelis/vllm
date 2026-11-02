@@ -1347,6 +1347,10 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         self._ghost_buffers.append((handle, buffer_kwargs, num_experts))
         self._ghost.start()
 
+    def enter_steady_state(self) -> None:
+        if self._ghost is not None:
+            self._ghost.steady = True
+
     def query_active_mask(self) -> torch.Tensor:
         # Fresh tensor: callers run both inside and outside inference mode
         mask = torch.zeros(self.world_size, device="cuda", dtype=torch.int32)

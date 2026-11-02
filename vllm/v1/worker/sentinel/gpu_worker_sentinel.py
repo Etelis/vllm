@@ -120,6 +120,11 @@ class WorkerSentinel:
     def activate_cpu_group_timeouts(self, ft_request: FaultToleranceRequest):
         enter_steady_state()
         parallel_config = self.worker.parallel_config
+        if parallel_config.enable_expert_parallel:
+            # Startup (and CUDA graph capture) is over: watchdogs may poll the GPU
+            steady = getattr(get_ep_all2all_manager(), "enter_steady_state", None)
+            if steady is not None:
+                steady()
         timeout_seconds = parallel_config.cpu_distributed_timeout_seconds
         if timeout_seconds is None:
             return
