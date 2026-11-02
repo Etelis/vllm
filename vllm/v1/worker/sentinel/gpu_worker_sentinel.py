@@ -241,6 +241,11 @@ class WorkerSentinel:
         announce = getattr(all2all_manager, "announce_fault", None)
         if announce is not None:
             announce()
+        dp_size = self.worker.parallel_config.data_parallel_size
+        if dp_size > 1:
+            from vllm.v1.worker.gpu.dp_utils import poison_dp_sync
+
+            poison_dp_sync(dp_size)
         with torch.cuda.stream(torch.cuda.Stream()):
             mask = all2all_manager.query_active_mask()
             return {"mask": mask.tolist()}

@@ -11,6 +11,7 @@ from vllm.config import ParallelConfig
 from vllm.config.compilation import CUDAGraphMode
 from vllm.config.fault_tolerance import ft_tp_barrier_required
 from vllm.distributed.parallel_state import get_dp_group, get_tp_group
+from vllm.distributed.utils import poison_cpu_all_reduce
 from vllm.v1.worker.dp_utils import should_skip_dp_coordination
 from vllm.v1.worker.gpu.cudagraph_utils import (
     BatchExecutionDescriptor,
@@ -46,6 +47,19 @@ class DPSyncState:
     skip_drafts: bool = False
 
 
+# Rows of the DP sync tensor (one column per DP rank)
+_DP_SYNC_FIELDS = 7
+
+
+def poison_dp_sync(dp_size: int) -> None:
+    """Poison this rank's part of the next DP sync, so peers blocked on a rank
+    whose engine faulted outside the sync fail at once instead of timing out."""
+    poison_cpu_all_reduce(
+        get_dp_group().cpu_group,
+        torch.zeros(_DP_SYNC_FIELDS, dp_size, dtype=torch.int32),
+    )
+
+
 def sync_cudagraph_and_dp_padding(
     cudagraph_manager: CudaGraphManager | None,
     desired_batch_desc: BatchExecutionDescriptor,
@@ -66,7 +80,7 @@ def sync_cudagraph_and_dp_padding(
     Returns (synced_batch_desc, sync). `sync` is None when no rank has work.
     """
     assert dp_size > 1, "DP size must be greater than 1"
-    tensor = torch.zeros(7, dp_size, dtype=torch.int32, device="cpu")
+    tensor = torch.zeros(_DP_SYNC_FIELDS, dp_size, dtype=torch.int32, device="cpu")
     tensor[0][dp_rank] = num_tokens
     tensor[1][dp_rank] = desired_batch_desc.cg_mode.value
     tensor[2][dp_rank] = uniform_token_count or 0  # (0 means None)
