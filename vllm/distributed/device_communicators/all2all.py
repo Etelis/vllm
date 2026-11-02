@@ -1216,7 +1216,6 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         )
         # Masked buffers, kept alive for the fault-tolerance queries
         self._masked_buffers: list[Any] = []
-        self._mask: torch.Tensor | None = None
         self._last_mask: torch.Tensor | None = None
 
     def _make_all2all_kwargs(
@@ -1305,12 +1304,11 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         return self._num_sms
 
     def query_active_mask(self) -> torch.Tensor:
-        if self._mask is None:
-            self._mask = torch.zeros(self.world_size, device="cuda", dtype=torch.int32)
-        self._mask.zero_()
+        # Fresh tensor: callers run both inside and outside inference mode
+        mask = torch.zeros(self.world_size, device="cuda", dtype=torch.int32)
         for buf in self._masked_buffers:
-            self._mask |= buf.get_rank_mask_tensor()
-        return self._mask
+            mask |= buf.get_rank_mask_tensor()
+        return mask
 
     def query_fault(self) -> torch.Tensor:
         current = self.query_active_mask()
