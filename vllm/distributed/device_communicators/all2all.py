@@ -1388,7 +1388,16 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
             return
         live = [r for r in self._world_ranks if r not in set(dead_ep_ranks)]
         key = f"ft_deepep_v2_ghost_{round_key}"
-        counters = self._ghost.read_counters()
+        # Publish once this rank's kernels settled (dead peers are played by
+        # the watchdog within milliseconds): a peer still releasing them is
+        # only slow, and playing it would double its arrivals.
+        counters, since = self._ghost.read_counters(), time.monotonic()
+        deadline = since + 30
+        while time.monotonic() - since < 0.5 and time.monotonic() < deadline:
+            time.sleep(0.05)
+            current = self._ghost.read_counters()
+            if current != counters:
+                counters, since = current, time.monotonic()
         store.set(f"{key}_{self.rank}", ",".join(map(str, counters)))
         behind = set()
         for r in live:
