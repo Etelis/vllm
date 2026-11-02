@@ -13,6 +13,7 @@ import torch.multiprocessing as mp
 from vllm.distributed.parallel_state import GroupCoordinator
 from vllm.distributed.utils import (
     cpu_all_reduce_,
+    poison_cpu_all_reduce,
     stateless_init_torch_distributed_process_group,
 )
 from vllm.utils.network_utils import get_open_port
@@ -105,3 +106,32 @@ def _timeout_worker(rank: int, world_size: int, port: int):
 
 def test_cpu_all_reduce_timeout():
     mp.spawn(_timeout_worker, args=(2, get_open_port()), nprocs=2, join=True)
+
+
+def _poison_worker(rank: int, world_size: int, port: int):
+    pg = stateless_init_torch_distributed_process_group(
+        "127.0.0.1", port, rank, world_size, backend="gloo"
+    )
+    if rank == 0:
+        # Faulted outside the collective: poisons it instead of joining, and
+        # stays alive so its peers cannot fail on a closed connection.
+        poison_cpu_all_reduce(pg, _make_input(rank, world_size, 0))
+        time.sleep(5)
+        return
+    t = _make_input(rank, world_size, 0)
+    start = time.monotonic()
+    with pytest.raises(RuntimeError, match="CPU all-reduce peer"):
+        cpu_all_reduce_(t, pg, timeout=timedelta(seconds=30))
+    assert time.monotonic() - start < 3
+
+
+# 4: recursive doubling, where rank 3 is poisoned by rank 1, not rank 0.
+# 3: cross-block exchange.
+@pytest.mark.parametrize("world_size", [3, 4])
+def test_cpu_all_reduce_poison(world_size: int):
+    mp.spawn(
+        _poison_worker,
+        args=(world_size, get_open_port()),
+        nprocs=world_size,
+        join=True,
+    )
