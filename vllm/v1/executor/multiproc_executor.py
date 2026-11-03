@@ -80,6 +80,9 @@ from vllm.v1.worker.worker_base import WorkerWrapperBase
 
 logger = init_logger(__name__)
 
+# Worker RPCs that run a model step (and its DP/TP syncs)
+_FT_STEP_METHODS = frozenset({"execute_model", "sample_tokens", "execute_dummy_batch"})
+
 
 class ExceptionWithKVConnectorOutput(Exception):
     """Carries a worker's KV connector output along with its failure."""
@@ -794,6 +797,10 @@ class WorkerProc:
         else:
             self.worker.load_model()
 
+        # Fault tolerance: after a failed step, refuse steps until recovery
+        self.ft_enabled = vllm_config.parallel_config.enable_fault_tolerance
+        self.ft_step_failed = False
+
         scheduler_config = vllm_config.scheduler_config
         self.use_async_scheduling = scheduler_config.async_scheduling
         if self.use_async_scheduling:
@@ -1109,6 +1116,8 @@ class WorkerProc:
             try:
                 output = output.get_output()
             except Exception as e:
+                if self.ft_enabled:
+                    self.ft_step_failed = True
                 logger.exception("Error getting async model runner output")
                 kv_connector_output = output.get_kv_connector_output()
                 if (
@@ -1174,6 +1183,8 @@ class WorkerProc:
         """Execute one RPC in a separate frame from the dequeue loop."""
         method, args, kwargs, output_rank = rpc_request
         try:
+            if self.ft_enabled:
+                self._check_ft_step(method, args)
             if isinstance(method, str):
                 func = getattr(self.worker, method)
             elif isinstance(method, bytes):
@@ -1193,11 +1204,25 @@ class WorkerProc:
             # Notes have been introduced in python 3.11
             if hasattr(e, "add_note"):
                 e.add_note(traceback.format_exc())
+            if self.ft_enabled and method in _FT_STEP_METHODS:
+                self.ft_step_failed = True
             logger.exception("WorkerProc hit an exception.")
             # enqueue_output converts the exception to a FAILURE response
             # containing its string representation before transport.
             if output_rank is None or self.rank == output_rank:
                 self.handle_output(e)
+
+    def _check_ft_step(self, method, args) -> None:
+        """A step queued (e.g. by async scheduling) after this worker's step
+        failed would block in collectives with peers stuck on that failure,
+        delaying the engine's fault handling: refuse it until recovery."""
+        if method == "handle_ft_command" and getattr(args[0], "instruction", None) in (
+            "retry",
+            "scale_down",
+        ):
+            self.ft_step_failed = False
+        elif self.ft_step_failed and method in _FT_STEP_METHODS:
+            raise RuntimeError("[FT] A previous step failed on this worker")
 
     @staticmethod
     def setup_proc_title_and_log_prefix(enable_ep: bool) -> None:
