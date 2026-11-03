@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 import torch
-import torch.distributed as dist
 
 from vllm.config import ParallelConfig
 from vllm.config.compilation import CUDAGraphMode
@@ -51,6 +50,10 @@ class DPSyncState:
 _DP_SYNC_FIELDS = 7
 
 
+def _tp_barrier_tensor() -> torch.Tensor:
+    return torch.zeros(1, dtype=torch.int32)
+
+
 def poison_dp_sync(dp_size: int) -> None:
     """Poison this rank's part of the next DP sync, so peers blocked on a rank
     whose engine faulted outside the sync fail at once instead of timing out."""
@@ -88,10 +91,20 @@ def sync_cudagraph_and_dp_padding(
     tensor[4][dp_rank] = int(allow_ubatching)
     tensor[5][dp_rank] = num_reqs
     tensor[6][dp_rank] = int(allow_skip_drafts)
+    ft_tp_barrier = parallel_config is not None and ft_tp_barrier_required(
+        parallel_config
+    )
     if should_skip_dp_coordination():
         tensor[:] = tensor[:, dp_rank, None].clone()
     else:
-        get_dp_group().cpu_all_reduce_(tensor)
+        try:
+            get_dp_group().cpu_all_reduce_(tensor)
+        except Exception:
+            if ft_tp_barrier:
+                # A TP sibling whose DP sync completed waits in the barrier
+                # below for this rank: release it now
+                poison_cpu_all_reduce(get_tp_group().cpu_group, _tp_barrier_tensor())
+            raise
 
     # Full width, dead slots included: returned in DPSyncState, whose
     # consumers index it by original dp_rank.
@@ -101,8 +114,10 @@ def sync_cudagraph_and_dp_padding(
         # Per-step barrier over the TP cpu group: a faulted sibling stops
         # arriving, so survivors fail here on the host instead of leaving
         # an orphaned TP collective running on device.
-        if ft_tp_barrier_required(parallel_config):
-            dist.barrier(group=get_tp_group().cpu_group)
+        if ft_tp_barrier:
+            # A CPU all-reduce rather than a gloo barrier, so a sibling that
+            # failed before arriving can release it
+            get_tp_group().cpu_all_reduce_(_tp_barrier_tensor())
 
         if dead_dp_ranks := get_dp_group().dead_dp_ranks:
             # Drop the failed ranks' columns so the min / all(==1) agreements
