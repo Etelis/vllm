@@ -385,7 +385,8 @@ Retry can recover from a fault when all workers remain alive.
 
 With `deepep_v2`, fault tolerance requires all EP ranks on one host and no
 micro-batching (DBO). Surviving ranks complete the failed ranks' part of each
-dispatch and combine, so expert buffers and CUDA graphs are kept.
+dispatch and combine, so expert buffers and CUDA graphs are kept. Each worker
+uses about 0.3 GiB of device memory outside `--gpu-memory-utilization` for this.
 
 For scale-down recovery, also enable `--enable-eplb` and configure enough
 redundant expert slots with `--eplb-config.num_redundant_experts` to fit all
