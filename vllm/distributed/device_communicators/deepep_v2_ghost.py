@@ -89,21 +89,23 @@ def _pre_op_kernel(
     # ranks' arrivals (+1 or -1 by barrier sign). Live peers may be adding
     # theirs concurrently, hence atomics.
     pid = tl.program_id(0)
+    # Healthy steps only pay this load (graphs keep the launch for later faults)
     num_dead = tl.load(num_dead_ptr)
-    if (pid == 0) & (num_dead > 0):
-        counter = tl.load(counter_ptr)
-        for k in tl.static_range(2):
-            barrier = counter + k
-            sign = ((barrier >> 1) & 1).to(tl.int32)
-            delta = num_dead * (1 - 2 * sign)
-            tl.atomic_add(signals_ptr + (barrier & 1), delta)
-    if IS_DISPATCH:
-        # "0 tokens" (encoded -1) in the dead ranks' rank and expert count slots
-        offs = pid * BLOCK + tl.arange(0, BLOCK)
-        mask = offs < num_slots
-        dead = tl.load(dead_slots_ptr + offs, mask=mask, other=0)
-        minus_one = tl.full([BLOCK], -1, tl.int64)
-        tl.store(counts_ptr + offs, minus_one, mask=mask & (dead != 0))
+    if num_dead > 0:
+        if pid == 0:
+            counter = tl.load(counter_ptr)
+            for k in tl.static_range(2):
+                barrier = counter + k
+                sign = ((barrier >> 1) & 1).to(tl.int32)
+                delta = num_dead * (1 - 2 * sign)
+                tl.atomic_add(signals_ptr + (barrier & 1), delta)
+        if IS_DISPATCH:
+            # "0 tokens" (encoded -1) in the dead ranks' rank and expert slots
+            offs = pid * BLOCK + tl.arange(0, BLOCK)
+            mask = offs < num_slots
+            dead = tl.load(dead_slots_ptr + offs, mask=mask, other=0)
+            minus_one = tl.full([BLOCK], -1, tl.int64)
+            tl.store(counts_ptr + offs, minus_one, mask=mask & (dead != 0))
 
 
 def _alive(pid: int) -> bool:
