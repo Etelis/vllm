@@ -383,6 +383,13 @@ class MultiprocExecutor(Executor):
                 proc.name,
                 proc.exitcode,
             )
+            if _self.vllm_config.parallel_config.enable_fault_tolerance:
+                # The engine is dead. Its other workers can be blocked in
+                # collectives with live peers (e.g. the DP sync) that only end
+                # when they exit: stop them now, not after the shutdown grace.
+                for h in workers:
+                    if h.proc.is_alive():
+                        h.proc.kill()
             _self.shutdown()
             callback = _self.failure_callback
             if callback is not None:
