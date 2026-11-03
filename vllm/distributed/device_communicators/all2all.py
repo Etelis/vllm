@@ -1349,7 +1349,7 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
 
     def enter_steady_state(self) -> None:
         if self._ghost is not None:
-            self._ghost.steady = True
+            self._ghost.enter_steady_state()
 
     def announce_fault(self) -> None:
         """This rank's engine faulted and stopped stepping (host memory only)."""
@@ -1366,7 +1366,7 @@ class DeepEPV2All2AllManager(All2AllManagerBase):
         for buf in self._masked_buffers:
             mask |= buf.get_rank_mask_tensor()
         if self._ghost is not None:
-            mask |= self._ghost.mask
+            mask |= self._ghost.host_mask().to(mask.device)
         return mask
 
     def query_fault(self) -> torch.Tensor:

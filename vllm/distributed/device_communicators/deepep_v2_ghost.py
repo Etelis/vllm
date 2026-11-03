@@ -16,6 +16,7 @@ Offsets follow deep_ep/include/deep_ep/common/layout.cuh at the DeepEP commit
 vLLM pins; a consistency check at registration rejects other layouts.
 """
 
+import ctypes
 import os
 import threading
 import time
@@ -191,12 +192,90 @@ class GhostBuffer:
         self.signals.index_add_(0, barriers & 1, delta)
 
 
+class _PrivateContext:
+    """Async copies in a CUDA context of the watchdog's own.
+
+    A stream waiting on a kernel stuck on a dead peer blocks every stream that
+    shares its hardware queue, so a copy in the process's context can wait
+    behind it. Another context has its own channels, and the DeepEP workspace
+    is VMM memory, mapped for every context in the process. No kernels run
+    here, so its stack, printf and heap limits are minimal.
+    """
+
+    _NOT_READY = 600  # CUDA_ERROR_NOT_READY
+    _LIMITS = ((0x00, 64), (0x01, 4096), (0x02, 1 << 16))
+
+    def __init__(self, host_bytes: int):
+        lib = ctypes.CDLL("libcuda.so.1")
+        ptr, size = ctypes.c_void_p, ctypes.c_size_t
+        lib.cuMemcpyDtoHAsync_v2.argtypes = [ptr, ctypes.c_uint64, size, ptr]
+        lib.cuMemcpyHtoDAsync_v2.argtypes = [ctypes.c_uint64, ptr, size, ptr]
+        lib.cuStreamQuery.argtypes = [ptr]
+        lib.cuCtxPushCurrent_v2.argtypes = [ptr]
+        lib.cuCtxSetLimit.argtypes = [ctypes.c_int, size]
+        self._lib = lib
+        # The device of the calling thread's (process) context
+        device = ctypes.c_int()
+        self._check(lib.cuCtxGetDevice(ctypes.byref(device)), "cuCtxGetDevice")
+        self._ctx = ptr()
+        self._check(lib.cuCtxCreate_v2(ctypes.byref(self._ctx), 0, device), "cuCtx")
+        try:
+            for limit, value in self._LIMITS:
+                self._check(lib.cuCtxSetLimit(limit, value), "cuCtxSetLimit")
+            self._stream = ptr()
+            self._check(lib.cuStreamCreate(ctypes.byref(self._stream), 1), "stream")
+            host = ptr()
+            # Portable: pinned for this context too
+            self._check(lib.cuMemHostAlloc(ctypes.byref(host), host_bytes, 1), "host")
+        finally:
+            lib.cuCtxPopCurrent_v2(ctypes.byref(ptr()))
+        if host.value is None:
+            raise RuntimeError("cuMemHostAlloc returned no memory")
+        self.host = (ctypes.c_uint8 * host_bytes).from_address(host.value)
+
+    @staticmethod
+    def _check(result: int, what: str) -> None:
+        if result != 0:
+            raise RuntimeError(f"{what} failed with CUDA driver error {result}")
+
+    def copy(self, dst: int, src: int, nbytes: int, to_host: bool, timeout: float):
+        lib = self._lib
+        self._check(lib.cuCtxPushCurrent_v2(self._ctx), "cuCtxPushCurrent")
+        try:
+            if to_host:
+                result = lib.cuMemcpyDtoHAsync_v2(dst, src, nbytes, self._stream)
+            else:
+                result = lib.cuMemcpyHtoDAsync_v2(dst, src, nbytes, self._stream)
+            self._check(result, "copy")
+            deadline = time.monotonic() + timeout
+            while (result := lib.cuStreamQuery(self._stream)) == self._NOT_READY:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("DeepEP v2 ghost copy did not complete")
+                time.sleep(0.0001)
+            self._check(result, "cuStreamQuery")
+        finally:
+            lib.cuCtxPopCurrent_v2(ctypes.byref(ctypes.c_void_p()))
+
+
+def _host_buffers(block) -> tuple[torch.Tensor, ...]:
+    """Counter, signals, value and "0 tokens" views of a host byte block."""
+    counter = torch.frombuffer(block, dtype=torch.int64, count=1, offset=0)
+    signals = torch.frombuffer(block, dtype=torch.int32, count=2, offset=8)
+    value = torch.frombuffer(block, dtype=torch.int32, count=1, offset=16)
+    minus_one = torch.frombuffer(
+        block, dtype=torch.int64, count=_MAX_EXPERTS_PER_RANK, offset=64
+    )
+    minus_one.fill_(-1)
+    return counter, signals, value, minus_one
+
+
 class GhostWatchdog:
     """Detects dead EP peers and releases the kernels stuck on them.
 
-    The thread only issues async copies on a side stream from buffers allocated
-    up front: allocations, pageable copies, default-stream work and kernel
-    launches can all wait behind the stuck kernel.
+    The thread only issues async copies from buffers allocated up front, in a
+    private CUDA context once in steady state: allocations, pageable copies,
+    default-stream work and kernel launches can all wait behind the stuck
+    kernel, and so can any copy in the process's context.
     """
 
     def __init__(
@@ -222,9 +301,8 @@ class GhostWatchdog:
         # Refreshed every step by the fault query; a healthy rank that keeps
         # stepping is never polled, so the watchdog stays off the GIL and GPU
         self.heartbeat = time.monotonic()
-        # Set with any mask bit: the per-step fault query just returns it
-        self.fault_flag = torch.zeros((), dtype=torch.bool, device="cuda")
-        self._true_h = torch.ones((), dtype=torch.bool, pin_memory=True)
+        # Set with any mask bit (host memory): the per-step fault query returns it
+        self.fault_flag = torch.zeros((), dtype=torch.bool)
         self.ghosts: list[GhostBuffer] = []
         self.pids: list[int] = []
         # Original EP rank of each rank in the buffers' world
@@ -236,8 +314,9 @@ class GhostWatchdog:
         self.covered: set[int] = set()
         # Per buffer: first barrier at which the dead ranks' GPUs had stopped
         self._safe_from: dict[int, int] = {}
-        self.mask = torch.zeros(world_size, dtype=torch.int32, device="cuda")
-        self._mask_h = torch.zeros(world_size, dtype=torch.int32, pin_memory=True)
+        self._mask_h = torch.zeros(world_size, dtype=torch.int32)
+        # Until steady state (or without a private context): a side stream
+        self._private: _PrivateContext | None = None
         self._side = torch.cuda.Stream()
         self._event = torch.cuda.Event()
         self._counter_h = torch.empty(1, dtype=torch.int64, pin_memory=True)
@@ -247,12 +326,41 @@ class GhostWatchdog:
             (_MAX_EXPERTS_PER_RANK,), -1, dtype=torch.int64, pin_memory=True
         )
         self._device = torch.accelerator.current_device_index()
-        # The side stream and event are shared with recovery-time reads
+        # The copy path is shared with recovery-time reads
         self._copy_lock = threading.Lock()
         # Completes once this rank's launched work drained, after it left
         self._drained: torch.cuda.Event | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+
+    def enter_steady_state(self) -> None:
+        """Startup and CUDA graph capture are over (main thread, idle device):
+        GPU access may start, through a private context when one works."""
+        try:
+            private = _PrivateContext(host_bytes=4096)
+            buffers = _host_buffers(private.host)
+            for ghost in self.ghosts:
+                private.copy(
+                    buffers[0].data_ptr(), ghost.counter.data_ptr(), 8, True, 5
+                )
+                if int(buffers[0][0]) != int(ghost.counter.item()):
+                    raise RuntimeError("it reads other workspace values")
+        except Exception as e:
+            logger.warning(
+                "[FT] DeepEP v2 ghost: no private CUDA context (%s); fault "
+                "handling may wait behind streams blocked by a stuck kernel",
+                e,
+            )
+        else:
+            with self._copy_lock:
+                self._private = private
+                (
+                    self._counter_h,
+                    self._signals_h,
+                    self._value_h,
+                    self._minus_one_h,
+                ) = buffers
+        self.steady = True
 
     def set_world(self, ranks: list[int], pids: list[int]) -> None:
         self.ranks, self.pids = ranks, pids
@@ -295,9 +403,7 @@ class GhostWatchdog:
         """Mask in original EP numbering, kept equal to the replayed dead set."""
         self._mask_h.zero_()
         self._mask_h[dead_ep_ranks] = 1
-        self.mask.copy_(self._mask_h)
         self.fault_flag.zero_()
-        torch.accelerator.synchronize()
 
     def host_mask(self) -> torch.Tensor:
         """Mask in original EP numbering, from host memory (never waits on the GPU)."""
@@ -312,6 +418,12 @@ class GhostWatchdog:
 
     def _copy(self, dst: torch.Tensor, src: torch.Tensor, timeout: float = 5.0):
         with self._copy_lock:
+            if self._private is not None:
+                nbytes = src.numel() * src.element_size()
+                self._private.copy(
+                    dst.data_ptr(), src.data_ptr(), nbytes, not dst.is_cuda, timeout
+                )
+                return
             with torch.cuda.stream(self._side):
                 dst.copy_(src, non_blocking=True)
                 self._event.record(self._side)
@@ -382,8 +494,7 @@ class GhostWatchdog:
             return
         for i in newly:
             self._mask_h[self.ranks[i]] = 1
-        self._copy(self.mask, self._mask_h)
-        self._copy(self.fault_flag, self._true_h)
+        self.fault_flag.fill_(True)
         # Its GPU work can outlive the process: release nothing until it stopped
         for idx in range(len(self.ghosts)):
             self._safe_from[idx] = _UNPROVEN
@@ -418,8 +529,7 @@ class GhostWatchdog:
             return
         for i in behind:
             self._mask_h[self.ranks[i]] = 1
-        self._copy(self.mask, self._mask_h)
-        self._copy(self.fault_flag, self._true_h)
+        self.fault_flag.fill_(True)
         self.extra |= set(behind)
         logger.warning(
             "[FT] DeepEP v2 ghost: EP ranks %s %s; playing their part",
