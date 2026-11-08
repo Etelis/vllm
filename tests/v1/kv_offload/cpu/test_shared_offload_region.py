@@ -49,6 +49,7 @@ def _make_region(
     rank: int = 0,
     barrier=None,
     populate_shard: tuple[int, int] | None = None,
+    populate: bool = True,
 ) -> SharedOffloadRegion:
     assert cpu_page_size % PAGE_SIZE == 0
     return SharedOffloadRegion(
@@ -59,6 +60,7 @@ def _make_region(
         cpu_page_size=cpu_page_size,
         barrier=barrier,
         populate_shard=populate_shard,
+        populate=populate,
     )
 
 
@@ -561,6 +563,11 @@ def test_populate_shard_prefaults_only_its_share(iid, monkeypatch, shard, expect
     ):
         assert madvise_calls == [(0, PAGE_SIZE), *expected]
         assert barrier.call_count == 2
+
+
+def test_populate_false_skips_prefault(iid):
+    with _region(iid, num_chunks=3, num_workers=2, rank=None, populate=False) as r:
+        assert not any(_page_residency(r.mmap_obj, r.total_size_bytes))
 
 
 def test_madvise_einval_selects_fallback_for_ranked_region(iid, monkeypatch):
