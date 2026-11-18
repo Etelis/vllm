@@ -16,8 +16,10 @@ from tests.parser.engine.replay_harness import (
     _test_request,
     collect_output,
     replay_streaming,
+    replay_with_text_holdback,
 )
 from vllm.entrypoints.generate.base.protocol import parser_chat_template_kwargs
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionToolsParam
 from vllm.parser.engine.registered_adapters import (
     MuseParserToolAdapter,
 )
@@ -304,3 +306,62 @@ def test_grammar_starts_at_the_answer_header(tokenizer):
     assert ends(PROMPT, reasoning, answer + _ids('{"a": 1}'))
     # A prompt that already ends with the answer header (a prefilled answer).
     assert parser.is_reasoning_end(PROMPT + reasoning + answer)
+
+
+@pytest.mark.parametrize(
+    ("case", "response_format", "expected"),
+    [
+        ("tool_then_more_reasoning", None, "Plan.Again."),
+        ("commentary_answer", None, "Plan."),
+        ("commentary_answer", JSON_FORMAT, "Plan.Working. "),
+    ],
+)
+def test_reasoning_tokens_counted_from_ids(tokenizer, case, response_format, expected):
+    # Counted from ids, so detokenizer holdback cannot undercount.
+    kwargs = {"chat_template_kwargs": {"response_format": response_format}}
+    parser = MuseParser(tokenizer, **kwargs)
+    tokens = _tokens(CASES[case][0])
+    replay_with_text_holdback(parser, tokens, text_delay=3, tools=TOOLS)
+    assert parser.count_reasoning_tokens(_ids(CASES[case][0])) == len(expected)
+
+
+def test_parallel_tool_calls_survive_detokenizer_holdback(parser_cls, tokenizer):
+    tokens = _tokens(_turn(_call("Paris"), _call("Rome")))
+    output = collect_output(
+        replay_with_text_holdback(
+            parser_cls(tokenizer), tokens, text_delay=3, tools=TOOLS
+        )
+    )
+    assert [json.loads(tc["arguments"])["city"] for tc in output.tool_calls] == [
+        "Paris",
+        "Rome",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("registered", "emitted", "expected"),
+    [
+        (["Bash"], "Bash.Bash", "Bash"),
+        (["Bash"], "Bash.command", "Bash"),
+        (["Bash"], "Bash.", "Bash"),
+        (["Bash", "Bash.run"], "Bash.fetch", "Bash.fetch"),
+        (["Bash", "Bash.run"], "Bash.Bash", "Bash"),
+    ],
+)
+def test_suffixed_name_maps_to_registered_bare_tool(
+    parser_cls, tokenizer, registered, emitted, expected
+):
+    tools = [
+        {"type": "function", "function": {"name": name, "parameters": {}}}
+        for name in registered
+    ]
+    text = _msg(
+        emitted,
+        f'<atem:function_calls><atem:invoke name="{emitted}">'
+        "</atem:invoke></atem:function_calls>",
+    )
+    parser = parser_cls(
+        tokenizer, [ChatCompletionToolsParam.model_validate(t) for t in tools]
+    )
+    _, _, tool_calls = parser.parse(text, _test_request(tools), enable_auto_tools=True)
+    assert [tc.name for tc in tool_calls or []] == [expected]

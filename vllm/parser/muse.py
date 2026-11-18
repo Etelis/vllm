@@ -358,7 +358,10 @@ class MuseParser(ParserEngine):
         for i, token_id in enumerate(token_ids):
             if token_id in self._message_ids:
                 header = self.model_tokenizer.decode(list(token_ids[header_start:i]))
-                in_reasoning = _route_header(header)[0] == "REASONING_HEADER"
+                in_reasoning = (
+                    _route_header(header, self._engine.commentary_is_reasoning)[0]
+                    == "REASONING_HEADER"
+                )
                 header_start = i + 1
             elif token_id in self._boundary_ids:
                 in_reasoning = False
