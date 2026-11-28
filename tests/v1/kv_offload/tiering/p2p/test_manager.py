@@ -1326,7 +1326,6 @@ class TestHasPendingWork:
 
         from vllm.distributed.kv_transfer.kv_connector.v1.offloading.scheduler import (
             OffloadingConnectorScheduler,
-            _ManagerStepState,
         )
         from vllm.distributed.kv_transfer.kv_connector.v1.offloading_connector import (
             OffloadingConnector,
@@ -1353,12 +1352,6 @@ class TestHasPendingWork:
             connector_scheduler.manager = manager
             connector_scheduler._job_statuses = {}
             connector_scheduler._reset_fence = {}
-            connector_scheduler._step_state = _ManagerStepState()
-            connector_scheduler._step_state.update(
-                manager.on_schedule_end(
-                    ScheduleEndContext(new_req_ids=(), preempted_req_ids=())
-                )
-            )
             connector = object.__new__(OffloadingConnector)
             connector.connector_scheduler = connector_scheduler
             scheduler = object.__new__(Scheduler)
@@ -1390,7 +1383,6 @@ class TestHasPendingWork:
 
         from vllm.distributed.kv_transfer.kv_connector.v1.offloading.scheduler import (
             OffloadingConnectorScheduler,
-            _ManagerStepState,
         )
         from vllm.distributed.kv_transfer.kv_connector.v1.offloading_connector import (
             OffloadingConnector,
@@ -1419,12 +1411,6 @@ class TestHasPendingWork:
             connector_scheduler.manager = manager
             connector_scheduler._job_statuses = {}
             connector_scheduler._reset_fence = {}
-            connector_scheduler._step_state = _ManagerStepState()
-            connector_scheduler._step_state.update(
-                manager.on_schedule_end(
-                    ScheduleEndContext(new_req_ids=(), preempted_req_ids=())
-                )
-            )
             connector = object.__new__(OffloadingConnector)
             connector.connector_scheduler = connector_scheduler
             scheduler = object.__new__(Scheduler)
@@ -3508,16 +3494,10 @@ def test_peer_lookup_counts_as_demand_only_after_fetch(fetch):
         else:
             # The peer releases its lookup pin with an empty fetch.
             consumer.on_request_finished(ctx)
-        step = tiering.on_schedule_end(ScheduleEndContext([], ()))
+        tiering.on_schedule_end(ScheduleEndContext([], ()))
         assert list(consumer.get_finished_jobs()) == (
             [JobResult(7, True)] if fetch else []
         )
-        # The demand is reported with the step that matched the fetch.
-        assert step.stats is not None
-        first_demands = step.stats.data["data"].get(
-            CPUOffloadingMetrics.CPU_CHUNK_TIME_TO_FIRST_DEMAND, {}
-        )
-        assert len(first_demands.get((), [])) == int(fetch)
 
         # Fill the four-slot primary tier so the pinned residency is evicted.
         primary = tiering.primary_tier
@@ -3529,6 +3509,10 @@ def test_peer_lookup_counts_as_demand_only_after_fetch(fetch):
         assert stats is not None
         evictions = stats.data["data"][CPUOffloadingMetrics.CPU_CHUNK_EVICTIONS]
         assert evictions == {("true" if fetch else "false",): 1}
+        first_demands = stats.data["data"].get(
+            CPUOffloadingMetrics.CPU_CHUNK_TIME_TO_FIRST_DEMAND, {}
+        )
+        assert len(first_demands.get((), [])) == int(fetch)
     finally:
         tiering.shutdown()
         consumer.shutdown()

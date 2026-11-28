@@ -28,6 +28,7 @@ class ChunkStatus(ctypes.Structure):
 
     ref_cnt - the current number of transfers using this chunk as a source.
         A value of -1 indicates the chunk is not yet ready to be read.
+    lease_cnt - the number of leases preferring to keep the chunk resident.
     chunk_id - index of the physical CPU buffer slot.
     ready_time - monotonic time at which the chunk became readable.
     last_demand_time - monotonic time of the last demand, or ready_time
@@ -37,6 +38,7 @@ class ChunkStatus(ctypes.Structure):
 
     _fields_ = [
         ("ref_cnt", ctypes.c_int32),
+        ("lease_cnt", ctypes.c_int32),
         ("chunk_id", ctypes.c_int64),
         ("ready_time", ctypes.c_double),
         ("last_demand_time", ctypes.c_double),
@@ -48,6 +50,11 @@ class ChunkStatus(ctypes.Structure):
         # initialize chunk as "not ready" (ref_cnt = -1)
         self.ref_cnt = -1
         self.chunk_id = chunk_id
+
+    @property
+    def retained(self) -> bool:
+        """Return whether this chunk has an active retention lease."""
+        return self.lease_cnt > 0
 
     @property
     def is_ready(self) -> bool:
@@ -128,6 +135,10 @@ class CachePolicy(ABC):
     ) -> list[tuple[OffloadKey, ChunkStatus]] | None:
         """Evict exactly n chunks, skipping any in protected.
 
+        Built-in policies prefer eligible non-retained chunks, falling back
+        to eligible retained chunks if needed. Retention is optional for
+        external policies.
+
         Returns a list of (key, chunk) for the evicted chunks,
         or None if n evictions cannot be satisfied. The operation is atomic:
         if None is returned, no state changes are made.
@@ -142,6 +153,10 @@ class CachePolicy(ABC):
 
         Ghost lists and adaptive state are also reset.
         """
+
+    def on_retention_changed(self, key: OffloadKey, retained: bool) -> None:
+        """Called whenever a resident chunk gains its first lease or loses its last."""
+        return
 
     def mark_evictable(self, key: OffloadKey) -> None:
         """Called when a chunk's ref_cnt transitions to 0."""
