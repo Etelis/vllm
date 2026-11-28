@@ -73,6 +73,12 @@ const PROMOTION_LATENCY_BUCKETS: &[f64] = &[
 const CPU_ALLOCATION_SIZE_BUCKETS: &[f64] = &[
     1.0, 4.0, 16.0, 64.0, 256.0, 1024.0, 4096.0, 16384.0, 65536.0, 262144.0,
 ];
+const CPU_CHUNK_AGE_BUCKETS: &[f64] = &[
+    1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0, 14400.0, 86400.0,
+];
+const CPU_CHUNK_TIME_TO_FIRST_DEMAND_BUCKETS: &[f64] = &[
+    0.1, 0.5, 1.0, 5.0, 15.0, 60.0, 300.0, 1800.0, 3600.0, 14400.0,
+];
 
 /// Kind of one family, which fixes the shape of its samples.
 #[derive(Clone, Copy, Debug)]
@@ -180,6 +186,31 @@ const DEFINITIONS: &[Definition] = &[
                call",
         labels: &[],
         kind: Kind::Histogram(CPU_ALLOCATION_SIZE_BUCKETS),
+    },
+    Definition {
+        name: "vllm:kv_offload_cpu_chunk_idle_before_evict_seconds",
+        help: "Seconds from the last demand of a CPU chunk to its capacity eviction. Not observed \
+               for unused chunks",
+        labels: &[],
+        kind: Kind::Histogram(CPU_CHUNK_AGE_BUCKETS),
+    },
+    Definition {
+        name: "vllm:kv_offload_cpu_chunk_lifetime_seconds",
+        help: "Seconds from CPU chunk readiness to capacity eviction",
+        labels: &[],
+        kind: Kind::Histogram(CPU_CHUNK_AGE_BUCKETS),
+    },
+    Definition {
+        name: "vllm:kv_offload_cpu_chunk_evictions",
+        help: "Capacity evictions by whether a GPU load or a peer ever demanded the chunk",
+        labels: &["ever_used"],
+        kind: Kind::Counter,
+    },
+    Definition {
+        name: "vllm:kv_offload_cpu_chunk_time_to_first_demand_seconds",
+        help: "Seconds from CPU chunk readiness to its first demand",
+        labels: &[],
+        kind: Kind::Histogram(CPU_CHUNK_TIME_TO_FIRST_DEMAND_BUCKETS),
     },
     // Declared only with `store_threshold >= 2`, which only then reports it.
     Definition {
@@ -591,6 +622,14 @@ mod tests {
                     "vllm:kv_offload_cpu_cache_usage_perc".to_string(),
                     value(usage),
                 ),
+                (
+                    "vllm:kv_offload_cpu_chunk_evictions".to_string(),
+                    BTreeMap::from([(vec!["true".to_string()], OffloadingSample::Value(2.0))]),
+                ),
+                (
+                    "vllm:kv_offload_cpu_chunk_lifetime_seconds".to_string(),
+                    BTreeMap::from([(vec![], OffloadingSample::Observations(vec![45.0]))]),
+                ),
                 // `TieringOffloadingSpec` families, labeled by tier.
                 (
                     "vllm:kv_offload_tiering_chunk_hits".to_string(),
@@ -632,6 +671,9 @@ mod tests {
         expect![[r#"
             vllm:kv_offload_config_info{model_name="model",engine="0",cpu_kv_cache_size_tokens="None",cpu_num_chunks="64"} 1.0
             vllm:kv_offload_cpu_cache_usage_perc{model_name="model",engine="0"} 0.75
+            vllm:kv_offload_cpu_chunk_evictions_total{model_name="model",engine="0",ever_used="true"} 4.0
+            vllm:kv_offload_cpu_chunk_lifetime_seconds_count{model_name="model",engine="0"} 2
+            vllm:kv_offload_cpu_chunk_lifetime_seconds_sum{model_name="model",engine="0"} 90.0
             vllm:kv_offload_load_bytes_total{model_name="model",engine="0"} 8192.0
             vllm:kv_offload_size_count{model_name="model",engine="0",transfer_type="GPU_to_CPU"} 4
             vllm:kv_offload_size_sum{model_name="model",engine="0",transfer_type="GPU_to_CPU"} 10000000.0
